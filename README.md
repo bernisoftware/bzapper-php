@@ -185,6 +185,93 @@ echo $created['api_key']; // chave CRUA — mostrada UMA única vez, guarde já
 $bz->revokeKey('uuid');
 ```
 
+## Webhooks
+
+Webhooks entregam eventos (mensagens recebidas, status de instância, mudanças em
+grupos…) no seu endpoint HTTPS. O SDK tem duas partes: **gerenciar** os webhooks
+(via `Client`) e **receber** as entregas com verificação de assinatura (via
+`Bzapper\Webhooks`).
+
+### Gerenciar
+
+```php
+// Criar (omita 'secret' para a API gerar um forte). O segredo volta UMA vez.
+$wh = $bz->createWebhook('https://meusite.com/bzapper/webhook', [
+    'event_types'   => ['message.received', 'instance.connected'], // vazio/omitido = todos
+    'number_filter' => 'uuid-do-numero', // opcional: restringe a um número
+]);
+echo $wh['secret']; // GUARDE já — mostrado só agora; use-o em new Webhooks(...)
+
+$bz->listWebhooks(); // { data: [...] }
+
+// Atualizar / pausar. secret = "regenerate" rotaciona o segredo.
+$bz->updateWebhook($wh['id'], ['active' => false]);
+$rot = $bz->updateWebhook($wh['id'], ['secret' => 'regenerate']);
+echo $rot['secret']; // novo segredo, mostrado só agora
+
+$bz->testWebhook($wh['id'], 'message.received'); // dispara evento de teste
+$bz->webhookDeliveries($wh['id'], 20);           // entregas recentes (limit opcional)
+
+$bz->deleteWebhook($wh['id']);
+```
+
+> **Regra:** cada tipo de evento pertence a **um único webhook** (a API responde
+> 409 em conflito).
+
+### Receber (verificar assinatura + rotear)
+
+A API assina toda entrega com `X-Bzapper-Signature: sha256=<hex>`, onde o hex é
+`HMAC-SHA256(secret, corpo_cru)`. **Sempre** verifique usando o **corpo cru** (a
+string exata recebida — nunca re-serialize o JSON); a comparação é timing-safe.
+
+```php
+<?php
+require __DIR__ . '/vendor/autoload.php';
+
+use Bzapper\Webhooks;
+use Bzapper\WebhookSignatureException;
+
+$hooks = new Webhooks('whsec_...'); // o 'secret' devolvido por createWebhook
+
+$hooks
+    ->on('message.received', function (array $event): void {
+        // evento é um array associativo idiomático
+        echo ($event['sender']['name'] ?? '?'), ': ', ($event['payload']['body'] ?? ''), "\n";
+    })
+    ->on('instance.connected', function (array $event): void {
+        echo 'Número conectado: ', $event['instance_id'], "\n";
+    })
+    ->onAny(function (array $event): void {
+        // roda para TODO evento — bom para log/idempotência
+        error_log('bzapper event ' . $event['event_id'] . ' ' . $event['event_type']);
+    });
+
+// No seu endpoint HTTP — pegue o corpo CRU e o header de assinatura:
+$raw = file_get_contents('php://input');
+$sig = $_SERVER['HTTP_X_BZAPPER_SIGNATURE'] ?? null;
+
+try {
+    $event = $hooks->handle($raw, $sig); // verifica, parseia e despacha
+    http_response_code(200);             // 2xx = recebido; senão a API reentrega
+} catch (WebhookSignatureException $e) {
+    http_response_code(400);             // assinatura inválida — NÃO processe
+}
+```
+
+O envelope do evento tem: `event_id`, `event_type`, `timestamp`, `instance_id`,
+`client_reference?`, `group?{jid,name}`, `sender?{jid,lid,name}`, `mentions?[]` e
+`payload{}`. Tipos de evento: `message.{received,sent,delivered,read,failed}`,
+`instance.{connected,disconnected,banned,logged_out,warming,status}`,
+`group.{joined,participant_added,participant_removed,participant_promoted,participant_demoted,subject_changed,description_changed}`
+(veja `Webhooks::EVENT_TYPES`).
+
+> **Idempotência:** a API pode **reentregar**. Use `$event['event_id']` (estável)
+> para guardar os ids já processados (Redis/DB) e ignorar duplicatas.
+
+Só precisa verificar a assinatura sem despachar? Use os estáticos
+`Webhooks::verify($secret, $raw, $sig)` (bool) e
+`Webhooks::constructEvent($secret, $raw, $sig)` (evento, ou lança).
+
 ## Uso
 
 ```php

@@ -750,6 +750,114 @@ final class Client
     }
 
     // ---------------------------------------------------------------------
+    // Webhooks (gestão; para RECEBER+processar eventos use Bzapper\Webhooks)
+    // ---------------------------------------------------------------------
+
+    /**
+     * Lista os webhooks do projeto. GET /webhooks
+     *
+     * @return array<string,mixed> { data: list<array<string,mixed>> }
+     */
+    public function listWebhooks(): array
+    {
+        return $this->get('/webhooks');
+    }
+
+    /**
+     * Cria um webhook. POST /webhooks
+     *
+     * O `secret` (gerado pela API se omitido) é retornado UMA única vez no campo
+     * `secret` da resposta — guarde-o para usar com Bzapper\Webhooks.
+     *
+     * @param string $url URL HTTPS que receberá as entregas.
+     * @param array{secret?: string, event_types?: list<string>, number_filter?: string} $opts
+     *                        event_types: eventos assinados (vazio/omitido = todos;
+     *                        cada evento pertence a um único webhook, 409 em conflito).
+     *                        number_filter: instance_id para restringir a um número.
+     * @return array<string,mixed>
+     */
+    public function createWebhook(string $url, array $opts = []): array
+    {
+        $payload = ['url' => $url];
+        if (isset($opts['secret'])) {
+            $payload['secret'] = $opts['secret'];
+        }
+        if (isset($opts['event_types']) && is_array($opts['event_types'])) {
+            $payload['event_types'] = array_values($opts['event_types']);
+        }
+        if (isset($opts['number_filter'])) {
+            $payload['number_filter'] = $opts['number_filter'];
+        }
+        return $this->post('/webhooks', $payload);
+    }
+
+    /**
+     * Atualiza/pausa um webhook. PATCH /webhooks/{id}
+     *
+     * Use `secret = "regenerate"` para rotacionar o segredo (novo valor volta na
+     * resposta uma única vez). `active = false` pausa as entregas.
+     *
+     * @param array{url?: string, secret?: string, event_types?: list<string>, number_filter?: string, active?: bool} $opts
+     * @return array<string,mixed>
+     */
+    public function updateWebhook(string $id, array $opts = []): array
+    {
+        $payload = [];
+        foreach (['url', 'secret', 'number_filter'] as $k) {
+            if (isset($opts[$k])) {
+                $payload[$k] = $opts[$k];
+            }
+        }
+        if (isset($opts['event_types']) && is_array($opts['event_types'])) {
+            $payload['event_types'] = array_values($opts['event_types']);
+        }
+        if (isset($opts['active'])) {
+            $payload['active'] = (bool) $opts['active'];
+        }
+        return $this->patch('/webhooks/' . rawurlencode($id), $payload);
+    }
+
+    /**
+     * Remove um webhook. DELETE /webhooks/{id}
+     *
+     * @return array<string,mixed>
+     */
+    public function deleteWebhook(string $id): array
+    {
+        return $this->delete('/webhooks/' . rawurlencode($id));
+    }
+
+    /**
+     * Dispara um evento de teste e retorna o status HTTP do endpoint.
+     * POST /webhooks/{id}/test
+     *
+     * @param string|null $eventType Tipo do evento simulado (ex.: "message.received").
+     * @return array<string,mixed>
+     */
+    public function testWebhook(string $id, ?string $eventType = null): array
+    {
+        $payload = [];
+        if ($eventType !== null) {
+            $payload['event_type'] = $eventType;
+        }
+        return $this->post('/webhooks/' . rawurlencode($id) . '/test', $payload);
+    }
+
+    /**
+     * Tentativas recentes de entrega de um webhook. GET /webhooks/{id}/deliveries?limit=
+     *
+     * @return array<string,mixed>
+     */
+    public function webhookDeliveries(string $id, ?int $limit = null): array
+    {
+        $query = [];
+        if ($limit !== null) {
+            $query['limit'] = $limit;
+        }
+        return $this->get('/webhooks/' . rawurlencode($id) . '/deliveries', $query);
+    }
+
+    // ---------------------------------------------------------------------
     // Internos
     // ---------------------------------------------------------------------
 
