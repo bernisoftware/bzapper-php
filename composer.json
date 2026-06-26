@@ -1,0 +1,36 @@
+{
+    "name": "bzapper/bzapper",
+    "description": "SDK oficial do bZapper em PHP — gateway de WhatsApp multi-tenant (envio de mensagens, instâncias, keys e uso).",
+    "type": "library",
+    "keywords": ["bzapper", "whatsapp", "sdk", "messaging", "gateway", "api"],
+    "homepage": "https://bzapper.com.br",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Berni Software",
+            "email": "vinicius@berni.com.br"
+        }
+    ],
+    "require": {
+        "php": ">=8.1",
+        "ext-curl": "*",
+        "ext-json": "*"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^10.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Bzapper\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Bzapper\\Tests\\": "tests/"
+        }
+    },
+    "config": {
+        "sort-packages": true
+    },
+    "minimum-stability": "stable"
+}
