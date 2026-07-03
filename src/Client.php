@@ -8,7 +8,7 @@ namespace Bzapper;
  * Cliente oficial do bZapper — gateway de WhatsApp multi-tenant.
  *
  * ```php
- * $bz = new \Bzapper\Client('https://api.bzapper.com.br', 'bz_live_...');
+ * $bz = new \Bzapper\Client('bz_live_...'); // aponta para produção
  * $msg = $bz->sendText('+5511999999999', 'Olá do bZapper!');
  * echo $msg['message_id'];
  * ```
@@ -32,24 +32,31 @@ final class Client
     private int $timeout;
 
     /** Versão do SDK (usada no User-Agent). */
-    public const VERSION = '0.2.0';
+    public const VERSION = '0.5.0';
+
+    /** URL base padrão da API (produção). Sobrescreva só em dev/self-host. */
+    public const DEFAULT_BASE_URL = 'https://api.bzapper.com.br';
 
     /**
-     * @param string $baseUrl URL base da API (ex.: "http://localhost:8080" em dev).
-     * @param string $apiKey  API key do tenant (ex.: "bz_live_...").
+     * @param string      $apiKey  API key do tenant (ex.: "bz_live_..."). Único obrigatório.
+     * @param string|null $baseUrl URL base da API. Opcional — default produção
+     *                             (https://api.bzapper.com.br); informe só em dev
+     *                             ("http://localhost:8080") ou self-host.
      * @param array{locale?: string, timeout?: int} $opts
      *                        locale: BCP-47 enviado em Accept-Language (ex.: "pt-BR").
      *                        timeout: timeout total da requisição em segundos (default 30).
      */
-    public function __construct(string $baseUrl, string $apiKey, array $opts = [])
+    public function __construct(string $apiKey, ?string $baseUrl = null, array $opts = [])
     {
-        if ($baseUrl === '') {
-            throw new \InvalidArgumentException('baseUrl não pode ser vazio.');
+        // Compatibilidade: a assinatura antiga era (baseUrl, apiKey). Se o 1º
+        // argumento parecer uma URL, tratamos como o formato legado.
+        if ($baseUrl !== null && \str_starts_with($apiKey, 'http')) {
+            [$apiKey, $baseUrl] = [$baseUrl, $apiKey];
         }
         if ($apiKey === '') {
             throw new \InvalidArgumentException('apiKey não pode ser vazio.');
         }
-        $this->baseUrl = rtrim($baseUrl, '/');
+        $this->baseUrl = rtrim($baseUrl ?? self::DEFAULT_BASE_URL, '/');
         $this->apiKey = $apiKey;
         $this->locale = isset($opts['locale']) ? (string) $opts['locale'] : null;
         $this->timeout = isset($opts['timeout']) ? (int) $opts['timeout'] : 30;

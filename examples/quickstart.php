@@ -18,11 +18,11 @@ require __DIR__ . '/../vendor/autoload.php';
 use Bzapper\Client;
 use Bzapper\BzapperException;
 
-$baseUrl = getenv('BZAPPER_BASE_URL') ?: 'http://localhost:8080';
 $apiKey  = getenv('BZAPPER_API_KEY') ?: 'bz_live_xxx';
+$baseUrl = getenv('BZAPPER_BASE_URL') ?: null; // opcional: sem isto, aponta para produção
 $to      = getenv('BZAPPER_TO') ?: '+5511999999999';
 
-$bz = new Client($baseUrl, $apiKey, ['locale' => 'pt-BR', 'timeout' => 30]);
+$bz = new Client($apiKey, $baseUrl, ['locale' => 'pt-BR', 'timeout' => 30]);
 
 try {
     // 1) Texto

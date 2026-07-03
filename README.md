@@ -22,19 +22,20 @@ require __DIR__ . '/vendor/autoload.php';
 
 use Bzapper\Client;
 
-$bz = new Client('https://api.bzapper.com.br', 'bz_live_...'); // baseUrl, apiKey
+$bz = new Client('bz_live_...');
 
 $msg = $bz->sendText('+5511999999999', 'Olá do bZapper!');
 echo $msg['message_id'];
 ```
 
-`baseUrl` em dev costuma ser `http://localhost:8080`. A API key (`bz_live_...`)
-é gerada no painel ou via `createKey()`.
+O `baseUrl` tem default de produção (`https://api.bzapper.com.br`) e é **opcional** —
+informe apenas em dev/self-host: `new Client('bz_live_...', 'http://localhost:8080')`. A API
+key (`bz_live_...`) é gerada no painel ou via `createKey()`.
 
 ### Opções do construtor
 
 ```php
-$bz = new Client('https://api.bzapper.com.br', 'bz_live_...', [
+$bz = new Client('bz_live_...', null, [
     'locale'  => 'pt-BR', // enviado em Accept-Language
     'timeout' => 30,      // segundos (default 30)
 ]);
