@@ -256,6 +256,208 @@ final class Client
     }
 
     // ---------------------------------------------------------------------
+    // Envio agendado (scheduled_at em qualquer envio)
+    // ---------------------------------------------------------------------
+
+    /**
+     * Lista os agendamentos pendentes/recentes. GET /messages/scheduled
+     *
+     * @return array<string,mixed>
+     */
+    public function listScheduled(): array
+    {
+        return $this->get('/messages/scheduled');
+    }
+
+    /**
+     * Cancela um agendamento ainda pendente. DELETE /messages/scheduled/{id}
+     *
+     * @return array<string,mixed>
+     */
+    public function cancelScheduled(string $scheduledId): array
+    {
+        return $this->delete('/messages/scheduled/' . rawurlencode($scheduledId));
+    }
+
+    // ---------------------------------------------------------------------
+    // Campanhas (Pro + add-on de campanhas)
+    // ---------------------------------------------------------------------
+
+    /**
+     * Cria uma campanha com variações de template. POST /campaigns
+     * Exige o plano Pro e o add-on de Campanhas. O corpo de cada variação aceita
+     * {variaveis} e spintax {a|b|c}.
+     *
+     * @param array<int,array<string,mixed>> $variations
+     * @param array<string,mixed> $opts  name, pool_id, pacing_profile, start_at
+     * @return array<string,mixed>
+     */
+    public function createCampaign(array $variations, array $opts = []): array
+    {
+        $body = ['variations' => array_values($variations)];
+        foreach (['name', 'pool_id', 'pacing_profile', 'start_at'] as $k) {
+            if (isset($opts[$k])) {
+                $body[$k] = $opts[$k];
+            }
+        }
+        return $this->post('/campaigns', $body);
+    }
+
+    /**
+     * Lista as campanhas do projeto. GET /campaigns
+     *
+     * @return array<string,mixed>
+     */
+    public function listCampaigns(): array
+    {
+        return $this->get('/campaigns');
+    }
+
+    /**
+     * Campanha + estatísticas. GET /campaigns/{id}
+     *
+     * @return array<string,mixed>
+     */
+    public function getCampaign(string $id): array
+    {
+        return $this->get('/campaigns/' . rawurlencode($id));
+    }
+
+    /**
+     * Edita uma campanha ainda não iniciada. PATCH /campaigns/{id}
+     * Só permitido enquanto a campanha está draft/scheduled — 409 depois de iniciada.
+     * Se `variations` for enviado, substitui as variações existentes.
+     *
+     * @param array{name?: string, pool_id?: string, pacing_profile?: string, start_at?: string, variations?: array<int,array<string,mixed>>} $body
+     * @return array<string,mixed> A campanha atualizada.
+     */
+    public function updateCampaign(string $id, array $body): array
+    {
+        $payload = [];
+        foreach (['name', 'pool_id', 'pacing_profile', 'start_at'] as $k) {
+            if (isset($body[$k])) {
+                $payload[$k] = $body[$k];
+            }
+        }
+        if (isset($body['variations']) && is_array($body['variations'])) {
+            $payload['variations'] = array_values($body['variations']);
+        }
+        return $this->patch('/campaigns/' . rawurlencode($id), $payload);
+    }
+
+    /**
+     * Estima a duração do envio (ao vivo, sem criar campanha). GET /campaigns/estimate
+     * Alimenta o painel em tempo real do construtor: dado um número de destinatários
+     * e o perfil de ritmo, devolve os números elegíveis e a duração estimada.
+     *
+     * @param int|null    $recipients Número de destinatários.
+     * @param string|null $pacing     "conservative" ou "normal".
+     * @param string|null $poolId     Restringe a estimativa a um pool.
+     * @return array<string,mixed> { recipients, numbers_available, estimated_seconds, estimated_human }
+     */
+    public function estimateCampaign(?int $recipients = null, ?string $pacing = null, ?string $poolId = null): array
+    {
+        $query = [];
+        if ($recipients !== null) {
+            $query['recipients'] = $recipients;
+        }
+        if ($pacing !== null) {
+            $query['pacing'] = $pacing;
+        }
+        if ($poolId !== null) {
+            $query['pool_id'] = $poolId;
+        }
+        return $this->get('/campaigns/estimate', $query);
+    }
+
+    /**
+     * Adiciona (ou substitui) destinatários. POST /campaigns/{id}/recipients
+     *
+     * Combine as formas conforme necessário:
+     *  - `recipients`: lista de {phone, payload} (payload = variáveis por contato).
+     *  - `contacts`: mapa telefone → payload.
+     *  - `contact_ids`: lista de ids de contatos escolhidos (só os ativos entram).
+     *  - `contact_filter`: adiciona todo contato ATIVO que casa com o filtro
+     *    (assoc: search, tags, tags_all, groups, city, state, country, has_email).
+     *  - `replace` (bool): substitui toda a lista em vez de acrescentar (limpa antes);
+     *    só permitido enquanto a campanha está draft/scheduled.
+     *
+     * Para contact_ids/contact_filter os telefones são resolvidos no SERVIDOR e
+     * restritos a contatos ativos (bloqueados/opt-out/inalcançáveis nunca entram);
+     * a supressão é reverificada.
+     *
+     * @param array<string,mixed> $body
+     * @return array<string,mixed>
+     */
+    public function addCampaignRecipients(string $id, array $body): array
+    {
+        return $this->post('/campaigns/' . rawurlencode($id) . '/recipients', $body);
+    }
+
+    /**
+     * Lista destinatários. GET /campaigns/{id}/recipients
+     * Cada item inclui contact_name, status (pending|claimed|sent|failed|suppressed),
+     * delivery (''|sent|delivered|read, estado real pelos recibos do WhatsApp),
+     * message_id e last_error.
+     *
+     * @return array<string,mixed>
+     */
+    public function listCampaignRecipients(string $id): array
+    {
+        return $this->get('/campaigns/' . rawurlencode($id) . '/recipients');
+    }
+
+    /**
+     * Inicia (ou agenda) a campanha. POST /campaigns/{id}/start
+     *
+     * @return array<string,mixed>
+     */
+    public function startCampaign(string $id): array
+    {
+        return $this->post('/campaigns/' . rawurlencode($id) . '/start');
+    }
+
+    /**
+     * Pausa a campanha. POST /campaigns/{id}/pause
+     *
+     * @return array<string,mixed>
+     */
+    public function pauseCampaign(string $id): array
+    {
+        return $this->post('/campaigns/' . rawurlencode($id) . '/pause');
+    }
+
+    /**
+     * Retoma a campanha. POST /campaigns/{id}/resume
+     *
+     * @return array<string,mixed>
+     */
+    public function resumeCampaign(string $id): array
+    {
+        return $this->post('/campaigns/' . rawurlencode($id) . '/resume');
+    }
+
+    /**
+     * Cancela a campanha. POST /campaigns/{id}/cancel
+     *
+     * @return array<string,mixed>
+     */
+    public function cancelCampaign(string $id): array
+    {
+        return $this->post('/campaigns/' . rawurlencode($id) . '/cancel');
+    }
+
+    /**
+     * Simula a campanha sem disparar. POST /campaigns/{id}/dry-run
+     *
+     * @return array<string,mixed>
+     */
+    public function dryRunCampaign(string $id): array
+    {
+        return $this->post('/campaigns/' . rawurlencode($id) . '/dry-run');
+    }
+
+    // ---------------------------------------------------------------------
     // Instâncias (números)
     // ---------------------------------------------------------------------
 
@@ -870,7 +1072,7 @@ final class Client
     private function base(string $to, array $opts): array
     {
         $payload = ['to' => $to];
-        foreach (['instance_id', 'pool_id', 'quoted_message_id', 'client_reference'] as $k) {
+        foreach (['instance_id', 'pool_id', 'quoted_message_id', 'client_reference', 'scheduled_at'] as $k) {
             if (isset($opts[$k])) {
                 $payload[$k] = $opts[$k];
             }

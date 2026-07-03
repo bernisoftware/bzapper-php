@@ -1,0 +1,24 @@
+# Composer/Packagist: o Packagist lê o repo público bernisoftware/bzapper-php e
+# deriva as versões das TAGS git. Com a integração GitHub↔Packagist ligada, ele
+# atualiza sozinho a cada push/tag. Este workflow só FORÇA a atualização imediata
+# (sem ele, o Packagist atualiza em alguns minutos). Requer secrets:
+#   PACKAGIST_USERNAME, PACKAGIST_TOKEN (em packagist.org > Profile > Show API Token)
+name: publish
+on:
+  push:
+    tags: ['v*']
+jobs:
+  packagist:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Valida o composer.json
+        uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.1'
+      - run: composer validate --strict --no-check-publish
+      - name: Notifica o Packagist
+        run: |
+          curl -sf -XPOST -H 'content-type:application/json' \
+            "https://packagist.org/api/update-package?username=${{ secrets.PACKAGIST_USERNAME }}&apiToken=${{ secrets.PACKAGIST_TOKEN }}" \
+            -d '{"repository":{"url":"https://github.com/${{ github.repository }}"}}'
