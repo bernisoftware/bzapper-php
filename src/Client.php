@@ -471,11 +471,18 @@ final class Client
     /**
      * Lista instâncias (números) do tenant. GET /instances
      *
+     * @param array{project_id?: string} $params project_id: id do projeto, ou
+     *                        "all" para todos os números da conta. Omitido usa o
+     *                        projeto ativo (X-Project-Id).
      * @return array<string,mixed>
      */
-    public function listInstances(): array
+    public function listInstances(array $params = []): array
     {
-        return $this->get('/instances');
+        $query = [];
+        if (isset($params['project_id'])) {
+            $query['project_id'] = $params['project_id'];
+        }
+        return $this->get('/instances', $query);
     }
 
     /**
@@ -811,14 +818,17 @@ final class Client
     /**
      * Lista a base de contatos da conta (filtro opcional por projeto). GET /contacts
      *
-     * @param array{search?: string, project_id?: string, limit?: int} $params
+     * @param array{search?: string, project_id?: string, instance_id?: string, limit?: int} $params
      *                        project_id: id do projeto ou "current" (o da sua key).
+     *                        instance_id: filtra por um número (instância) com que
+     *                        o contato interagiu (vínculo mantido automaticamente
+     *                        pela API).
      * @return array<string,mixed>
      */
     public function listContacts(array $params = []): array
     {
         $query = [];
-        foreach (['search', 'project_id'] as $k) {
+        foreach (['search', 'project_id', 'instance_id'] as $k) {
             if (isset($params[$k])) {
                 $query[$k] = $params[$k];
             }
