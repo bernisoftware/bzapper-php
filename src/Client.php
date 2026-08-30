@@ -32,7 +32,7 @@ final class Client
     private int $timeout;
 
     /** Versão do SDK (usada no User-Agent). */
-    public const VERSION = '0.5.0';
+    public const VERSION = '0.6.1';
 
     /** URL base padrão da API (produção). Sobrescreva só em dev/self-host. */
     public const DEFAULT_BASE_URL = 'https://api.bzapper.com.br';
@@ -536,6 +536,23 @@ final class Client
     public function disconnectInstance(string $id): array
     {
         return $this->post('/instances/' . rawurlencode($id) . '/disconnect');
+    }
+
+    /**
+     * Apaga a credencial do dispositivo pareado, forçando um novo pareamento
+     * limpo. Use quando o connectInstance não emite QR ou o pareamento travou:
+     * o logout comum só desreferencia e deixa o dispositivo antigo para trás.
+     *
+     * Destrutivo e irreversível — o número fica offline e precisa escanear o QR
+     * de novo. É idempotente e pode ser repetido com segurança.
+     *
+     * POST /instances/{id}/clear-session
+     *
+     * @return array<string,mixed>
+     */
+    public function clearInstanceSession(string $id): array
+    {
+        return $this->post('/instances/' . rawurlencode($id) . '/clear-session');
     }
 
     // ---------------------------------------------------------------------
