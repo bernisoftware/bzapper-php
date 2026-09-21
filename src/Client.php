@@ -24,22 +24,59 @@ namespace Bzapper;
  *     mentions?: list<string>,
  *     sticky?: bool,
  *     scheduled_at?: string,
+ *     tags?: list<string>,
+ *     groups?: list<string>,
+ *     force?: bool,
  *     idempotency_key?: string
  * }
  *
  * `quoted_participant`: autor (telefone ou JID) da mensagem citada/reagida — só
  * é preciso em grupo quando ela não está no histórico do bZapper.
  * `mentions`: JIDs ou telefones ("5511…", "+55 11 9…").
+ * `tags`/`groups`: chaves de tag/grupo de contato aplicadas ao destinatário no CRM.
+ * `force`: envia mesmo a um contato suprimido/opt-out.
  * `idempotency_key`: vai no header `Idempotency-Key` (até 255 caracteres), NUNCA
  * no corpo. Repetir o envio com a mesma chave em 24h devolve a MESMA resposta
  * sem reenviar (409 idempotency_in_progress / 422 idempotency_key_reused).
+ *
+ * @phpstan-type RequestOptions array{idempotency_key?: string, timeout?: int|float}
+ *
+ * `RequestOptions` (último argumento dos métodos adicionados no padrão r2): `idempotency_key`
+ * substitui a Idempotency-Key automática de uma escrita; `timeout` (segundos) vale só
+ * para esta chamada.
+ *
+ * @phpstan-type ListContactsParams array{
+ *     search?: string, tags?: list<string>|string, tags_match?: 'any'|'all',
+ *     groups?: list<string>|string, project_id?: string, instance_id?: string,
+ *     status?: 'active'|'pending_validation'|'opted_out'|'blocked'|'unreachable',
+ *     city?: string, state?: string, country?: string, zip?: string, document?: string,
+ *     has_email?: bool, last_activity_after?: string|\DateTimeInterface,
+ *     last_activity_before?: string|\DateTimeInterface, created_after?: string|\DateTimeInterface,
+ *     created_before?: string|\DateTimeInterface, sort?: string, limit?: int, offset?: int
+ * }
+ *
+ * @phpstan-type ContactAddress array{
+ *     street?: string|null, number?: string|null, complement?: string|null, district?: string|null,
+ *     city?: string|null, state?: string|null, zip?: string|null, country?: string|null
+ * }
+ * @phpstan-type ContactInput array{
+ *     phone?: string, name?: string|null, email?: string|null, document?: string|null,
+ *     document_type?: string|null, address?: ContactAddress|null
+ * }
+ * @phpstan-type BrandProfile array{
+ *     about?: string, display_name?: string, logo_url?: string, website?: string,
+ *     email?: string, phone?: string, address?: string, description?: string
+ * }
  */
 final class Client
 {
     use HttpTransport;
 
     /** Versão do SDK (usada no User-Agent). */
-    public const VERSION = '0.6.2';
+    public const VERSION = '0.7.0';
+
+    /** Valor de `X-Bzapper-Client` / `User-Agent` enviado em toda requisição. */
+    public const CLIENT_ID = 'bzapper-php/' . self::VERSION;
 
     /** URL base padrão da API (produção). Sobrescreva só em dev/self-host. */
     public const DEFAULT_BASE_URL = 'https://api.bzapper.com.br';
@@ -49,9 +86,13 @@ final class Client
      * @param string|null $baseUrl URL base da API. Opcional — default produção
      *                             (https://api.bzapper.com.br); informe só em dev
      *                             ("http://localhost:8080") ou self-host.
-     * @param array{locale?: string, timeout?: int} $opts
+     * @param array{locale?: string, timeout?: int|float, max_retries?: int, project_id?: string, sleep?: callable(float): void} $opts
      *                        locale: BCP-47 enviado em Accept-Language (ex.: "pt-BR").
-     *                        timeout: timeout total da requisição em segundos (default 30).
+     *                        timeout: timeout por tentativa em segundos (default 30).
+     *                        max_retries: novas tentativas além da primeira em erro de
+     *                        rede/429/502/503/504 (default 2; 0 desliga).
+     *                        project_id: enviado como X-Project-Id (escopo de projeto).
+     *                        sleep: função de espera entre tentativas (testes).
      */
     public function __construct(string $apiKey, ?string $baseUrl = null, array $opts = [])
     {
@@ -271,13 +312,14 @@ final class Client
     // ---------------------------------------------------------------------
 
     /**
-     * Lista os agendamentos pendentes/recentes. GET /messages/scheduled
+     * Lista os agendamentos pendentes/recentes. GET /messages/scheduled?limit=
      *
+     * @param array{limit?: int} $params
      * @return array<string,mixed>
      */
-    public function listScheduled(): array
+    public function listScheduled(array $params = []): array
     {
-        return $this->get('/messages/scheduled');
+        return $this->get('/messages/scheduled', self::pick($params, ['limit']));
     }
 
     /**
@@ -287,7 +329,7 @@ final class Client
      */
     public function cancelScheduled(string $scheduledId): array
     {
-        return $this->delete('/messages/scheduled/' . rawurlencode($scheduledId));
+        return $this->delete('/messages/scheduled/' . self::seg($scheduledId));
     }
 
     // ---------------------------------------------------------------------
@@ -315,13 +357,14 @@ final class Client
     }
 
     /**
-     * Lista as campanhas do projeto. GET /campaigns
+     * Lista as campanhas do projeto. GET /campaigns?limit=
      *
+     * @param array{limit?: int} $params
      * @return array<string,mixed>
      */
-    public function listCampaigns(): array
+    public function listCampaigns(array $params = []): array
     {
-        return $this->get('/campaigns');
+        return $this->get('/campaigns', self::pick($params, ['limit']));
     }
 
     /**
@@ -331,7 +374,7 @@ final class Client
      */
     public function getCampaign(string $id): array
     {
-        return $this->get('/campaigns/' . rawurlencode($id));
+        return $this->get('/campaigns/' . self::seg($id));
     }
 
     /**
@@ -353,7 +396,7 @@ final class Client
         if (isset($body['variations']) && is_array($body['variations'])) {
             $payload['variations'] = array_values($body['variations']);
         }
-        return $this->patch('/campaigns/' . rawurlencode($id), $payload);
+        return $this->patch('/campaigns/' . self::seg($id), $payload);
     }
 
     /**
@@ -402,7 +445,7 @@ final class Client
      */
     public function addCampaignRecipients(string $id, array $body): array
     {
-        return $this->post('/campaigns/' . rawurlencode($id) . '/recipients', $body);
+        return $this->post('/campaigns/' . self::seg($id) . '/recipients', $body);
     }
 
     /**
@@ -411,11 +454,12 @@ final class Client
      * delivery (''|sent|delivered|read, estado real pelos recibos do WhatsApp),
      * message_id e last_error.
      *
+     * @param array{limit?: int} $params
      * @return array<string,mixed>
      */
-    public function listCampaignRecipients(string $id): array
+    public function listCampaignRecipients(string $id, array $params = []): array
     {
-        return $this->get('/campaigns/' . rawurlencode($id) . '/recipients');
+        return $this->get('/campaigns/' . self::seg($id) . '/recipients', self::pick($params, ['limit']));
     }
 
     /**
@@ -425,7 +469,7 @@ final class Client
      */
     public function startCampaign(string $id): array
     {
-        return $this->post('/campaigns/' . rawurlencode($id) . '/start');
+        return $this->post('/campaigns/' . self::seg($id) . '/start');
     }
 
     /**
@@ -435,7 +479,7 @@ final class Client
      */
     public function pauseCampaign(string $id): array
     {
-        return $this->post('/campaigns/' . rawurlencode($id) . '/pause');
+        return $this->post('/campaigns/' . self::seg($id) . '/pause');
     }
 
     /**
@@ -445,7 +489,7 @@ final class Client
      */
     public function resumeCampaign(string $id): array
     {
-        return $this->post('/campaigns/' . rawurlencode($id) . '/resume');
+        return $this->post('/campaigns/' . self::seg($id) . '/resume');
     }
 
     /**
@@ -455,7 +499,7 @@ final class Client
      */
     public function cancelCampaign(string $id): array
     {
-        return $this->post('/campaigns/' . rawurlencode($id) . '/cancel');
+        return $this->post('/campaigns/' . self::seg($id) . '/cancel');
     }
 
     /**
@@ -465,7 +509,7 @@ final class Client
      */
     public function dryRunCampaign(string $id): array
     {
-        return $this->post('/campaigns/' . rawurlencode($id) . '/dry-run');
+        return $this->post('/campaigns/' . self::seg($id) . '/dry-run');
     }
 
     // ---------------------------------------------------------------------
@@ -475,18 +519,14 @@ final class Client
     /**
      * Lista instâncias (números) do tenant. GET /instances
      *
-     * @param array{project_id?: string} $params project_id: id do projeto, ou
-     *                        "all" para todos os números da conta. Omitido usa o
-     *                        projeto ativo (X-Project-Id).
+     * @param array{project_id?: string, archived?: string|bool} $params project_id: id do
+     *                        projeto, ou "all" para todos os números da conta. Omitido usa o
+     *                        projeto ativo (X-Project-Id). archived: "1" lista os arquivados.
      * @return array<string,mixed>
      */
     public function listInstances(array $params = []): array
     {
-        $query = [];
-        if (isset($params['project_id'])) {
-            $query['project_id'] = $params['project_id'];
-        }
-        return $this->get('/instances', $query);
+        return $this->get('/instances', self::pick($params, ['project_id', 'archived']));
     }
 
     /**
@@ -513,7 +553,7 @@ final class Client
      */
     public function getInstance(string $id): array
     {
-        return $this->get('/instances/' . rawurlencode($id));
+        return $this->get('/instances/' . self::seg($id));
     }
 
     /**
@@ -526,7 +566,7 @@ final class Client
     public function connectInstance(string $id, string $method = 'qr'): array
     {
         return $this->post(
-            '/instances/' . rawurlencode($id) . '/connect',
+            '/instances/' . self::seg($id) . '/connect',
             null,
             ['method' => $method]
         );
@@ -539,7 +579,7 @@ final class Client
      */
     public function disconnectInstance(string $id): array
     {
-        return $this->post('/instances/' . rawurlencode($id) . '/disconnect');
+        return $this->post('/instances/' . self::seg($id) . '/disconnect');
     }
 
     /**
@@ -556,7 +596,7 @@ final class Client
      */
     public function clearInstanceSession(string $id): array
     {
-        return $this->post('/instances/' . rawurlencode($id) . '/clear-session');
+        return $this->post('/instances/' . self::seg($id) . '/clear-session');
     }
 
     // ---------------------------------------------------------------------
@@ -591,7 +631,7 @@ final class Client
      */
     public function revokeKey(string $id): array
     {
-        return $this->delete('/keys/' . rawurlencode($id));
+        return $this->delete('/keys/' . self::seg($id));
     }
 
     // ---------------------------------------------------------------------
@@ -664,7 +704,7 @@ final class Client
         if (isset($opts['limit'])) {
             $query['limit'] = (int) $opts['limit'];
         }
-        return $this->get('/conversations/' . rawurlencode($jid) . '/messages', $query);
+        return $this->get('/conversations/' . self::seg($jid, 'jid') . '/messages', $query);
     }
 
     /**
@@ -675,7 +715,7 @@ final class Client
     public function archiveChat(string $instanceId, string $jid, bool $on = true): array
     {
         return $this->post(
-            '/chats/' . rawurlencode($jid) . '/archive',
+            '/chats/' . self::seg($jid, 'jid') . '/archive',
             ['instance_id' => $instanceId, 'on' => $on]
         );
     }
@@ -688,7 +728,7 @@ final class Client
     public function pinChat(string $instanceId, string $jid, bool $on = true): array
     {
         return $this->post(
-            '/chats/' . rawurlencode($jid) . '/pin',
+            '/chats/' . self::seg($jid, 'jid') . '/pin',
             ['instance_id' => $instanceId, 'on' => $on]
         );
     }
@@ -701,7 +741,7 @@ final class Client
     public function markChat(string $instanceId, string $jid, bool $on = true): array
     {
         return $this->post(
-            '/chats/' . rawurlencode($jid) . '/read',
+            '/chats/' . self::seg($jid, 'jid') . '/read',
             ['instance_id' => $instanceId, 'on' => $on]
         );
     }
@@ -742,7 +782,7 @@ final class Client
      */
     public function getGroup(string $instanceId, string $jid): array
     {
-        return $this->get('/groups/' . rawurlencode($jid), ['instance_id' => $instanceId]);
+        return $this->get('/groups/' . self::seg($jid, 'jid'), ['instance_id' => $instanceId]);
     }
 
     /**
@@ -778,7 +818,7 @@ final class Client
     public function updateGroupParticipants(string $instanceId, string $jid, string $action, array $participants): array
     {
         return $this->post(
-            '/groups/' . rawurlencode($jid) . '/participants',
+            '/groups/' . self::seg($jid, 'jid') . '/participants',
             ['action' => $action, 'participants' => array_values($participants)],
             ['instance_id' => $instanceId]
         );
@@ -792,20 +832,25 @@ final class Client
     public function leaveGroup(string $instanceId, string $jid): array
     {
         return $this->post(
-            '/groups/' . rawurlencode($jid) . '/leave',
+            '/groups/' . self::seg($jid, 'jid') . '/leave',
             null,
             ['instance_id' => $instanceId]
         );
     }
 
     /**
-     * Obtém o link de convite do grupo. GET /groups/{jid}/invite?instance_id=
+     * Obtém o link de convite do grupo (operação `groupInviteLink`).
+     * GET /groups/{jid}/invite?instance_id=&reset=
      *
+     * @param bool|null $reset true revoga o link atual e gera um novo.
      * @return array<string,mixed>
      */
-    public function groupInvite(string $instanceId, string $jid): array
+    public function groupInvite(string $instanceId, string $jid, ?bool $reset = null): array
     {
-        return $this->get('/groups/' . rawurlencode($jid) . '/invite', ['instance_id' => $instanceId]);
+        return $this->get(
+            '/groups/' . self::seg($jid, 'jid') . '/invite',
+            ['instance_id' => $instanceId, 'reset' => $reset]
+        );
     }
 
     // ---------------------------------------------------------------------
@@ -841,7 +886,7 @@ final class Client
                 $payload[$k] = $profile[$k];
             }
         }
-        return $this->patch('/instances/' . rawurlencode($id) . '/profile', $payload);
+        return $this->patch('/instances/' . self::seg($id) . '/profile', $payload);
     }
 
     // ---------------------------------------------------------------------
@@ -851,23 +896,24 @@ final class Client
     /**
      * Lista a base de contatos da conta (filtro opcional por projeto). GET /contacts
      *
-     * @param array{search?: string, project_id?: string, instance_id?: string, limit?: int} $params
+     * @param ListContactsParams $params
      *                        project_id: id do projeto ou "current" (o da sua key).
      *                        instance_id: filtra por um número (instância) com que
      *                        o contato interagiu (vínculo mantido automaticamente
-     *                        pela API).
-     * @return array<string,mixed>
+     *                        pela API). tags/groups: listas (vão como CSV);
+     *                        tags_match "any"|"all"; datas RFC3339 ou \DateTimeInterface.
+     * @return array<string,mixed> { data, total, limit, offset }
      */
     public function listContacts(array $params = []): array
     {
-        $query = [];
-        foreach (['search', 'project_id', 'instance_id'] as $k) {
-            if (isset($params[$k])) {
-                $query[$k] = $params[$k];
-            }
-        }
-        if (isset($params['limit'])) {
-            $query['limit'] = (int) $params['limit'];
+        $query = self::pick($params, [
+            'search', 'tags', 'tags_match', 'groups', 'project_id', 'instance_id', 'status',
+            'city', 'state', 'country', 'zip', 'document', 'has_email',
+            'last_activity_after', 'last_activity_before', 'created_after', 'created_before',
+            'sort', 'limit', 'offset',
+        ]);
+        if (isset($query['limit'])) {
+            $query['limit'] = (int) $query['limit'];
         }
         return $this->get('/contacts', $query);
     }
@@ -889,11 +935,17 @@ final class Client
     /**
      * Cria um projeto (admin). POST /projects
      *
+     * @param string|null $apiMode "UNOFFICIAL" (padrão) ou "OFFICIAL" (WhatsApp Cloud API).
+     *                             Imutável depois de criado.
      * @return array<string,mixed>
      */
-    public function createProject(string $name): array
+    public function createProject(string $name, ?string $apiMode = null): array
     {
-        return $this->post('/projects', ['name' => $name]);
+        $payload = ['name' => $name];
+        if ($apiMode !== null) {
+            $payload['api_mode'] = $apiMode;
+        }
+        return $this->post('/projects', $payload);
     }
 
     // ---------------------------------------------------------------------
@@ -971,7 +1023,7 @@ final class Client
      */
     public function updateUserRole(string $id, string $role): array
     {
-        return $this->patch('/users/' . rawurlencode($id), ['role' => $role]);
+        return $this->patch('/users/' . self::seg($id), ['role' => $role]);
     }
 
     /**
@@ -981,7 +1033,7 @@ final class Client
      */
     public function removeUser(string $id): array
     {
-        return $this->delete('/users/' . rawurlencode($id));
+        return $this->delete('/users/' . self::seg($id));
     }
 
     /**
@@ -1006,11 +1058,6 @@ final class Client
     // ---------------------------------------------------------------------
 
     /**
-     * Lista os webhooks do projeto. GET /webhooks
-     *
-     * @return array<string,mixed> { data: list<array<string,mixed>> }
-     */
-    /**
      * Lista os avisos de AÇÃO NECESSÁRIA na sua integração. GET /advisories
      *
      * Um aviso significa que uma mudança nossa exige atualizar o SEU código (SDK
@@ -1032,9 +1079,14 @@ final class Client
      */
     public function markAdvisoryRead(string $advisoryId): array
     {
-        return $this->post('/advisories/' . rawurlencode($advisoryId) . '/read');
+        return $this->post('/advisories/' . self::seg($advisoryId) . '/read');
     }
 
+    /**
+     * Lista os webhooks do projeto. GET /webhooks
+     *
+     * @return array<string,mixed> { data: list<array<string,mixed>> }
+     */
     public function listWebhooks(): array
     {
         return $this->get('/webhooks');
@@ -1091,7 +1143,7 @@ final class Client
         if (isset($opts['active'])) {
             $payload['active'] = (bool) $opts['active'];
         }
-        return $this->patch('/webhooks/' . rawurlencode($id), $payload);
+        return $this->patch('/webhooks/' . self::seg($id), $payload);
     }
 
     /**
@@ -1101,7 +1153,7 @@ final class Client
      */
     public function deleteWebhook(string $id): array
     {
-        return $this->delete('/webhooks/' . rawurlencode($id));
+        return $this->delete('/webhooks/' . self::seg($id));
     }
 
     /**
@@ -1117,7 +1169,7 @@ final class Client
         if ($eventType !== null) {
             $payload['event_type'] = $eventType;
         }
-        return $this->post('/webhooks/' . rawurlencode($id) . '/test', $payload);
+        return $this->post('/webhooks/' . self::seg($id) . '/test', $payload);
     }
 
     /**
@@ -1131,7 +1183,7 @@ final class Client
         if ($limit !== null) {
             $query['limit'] = $limit;
         }
-        return $this->get('/webhooks/' . rawurlencode($id) . '/deliveries', $query);
+        return $this->get('/webhooks/' . self::seg($id) . '/deliveries', $query);
     }
 
     // ---------------------------------------------------------------------
@@ -1158,12 +1210,1008 @@ final class Client
      */
     public function revokeConnectedApp(string $id): array
     {
-        return $this->delete('/me/connections/' . rawurlencode($id));
+        return $this->delete('/me/connections/' . self::seg($id));
+    }
+
+    // =====================================================================
+    // Operações adicionadas no padrão Berni r2. Convenção de todas:
+    //  - parâmetros de caminho posicionais (vazio, "." ou ".." → InvalidArgumentException);
+    //  - `$body` / `$params` = o JSON/query como vai no fio (só as chaves que você passar;
+    //    em PATCH, chave ausente = não mexe, `null` = limpa quando a API aceita);
+    //  - `$options` por chamada: `idempotency_key` (escritas) e `timeout` (segundos);
+    //  - retorno: o JSON da API como array associativo, ou `null` quando não há corpo (204).
+    // =====================================================================
+
+    // ---------------------------------------------------------------------
+    // Identidade, perfil e conta
+    // ---------------------------------------------------------------------
+
+    /**
+     * Identidade autenticada (+ perfil quando é sessão de usuário). GET /me
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function getMe(array $options = []): ?array
+    {
+        return $this->call('GET', '/me', [], null, $options);
+    }
+
+    /**
+     * Atualiza o perfil do usuário. PATCH /me
+     *
+     * @param array{name?: string, phone?: string, job_title?: string, locale?: string} $body
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function updateProfile(array $body, array $options = []): ?array
+    {
+        return $this->call('PATCH', '/me', [], $body, $options);
+    }
+
+    /**
+     * Renomeia a conta (nome da empresa) — admin. PATCH /account
+     *
+     * @param array{name: string} $body
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function updateAccount(array $body, array $options = []): ?array
+    {
+        return $this->call('PATCH', '/account', [], $body, $options);
+    }
+
+    /**
+     * Health check da API (sem autenticação obrigatória). GET /healthz
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null { status, version }
+     */
+    public function getHealth(array $options = []): ?array
+    {
+        return $this->call('GET', '/healthz', [], null, $options);
+    }
+
+    // ---------------------------------------------------------------------
+    // Marca (logo) e projetos
+    // ---------------------------------------------------------------------
+
+    /**
+     * Envia o logo da marca do projeto (multipart, campo `file`). POST /brand/logo
+     *
+     * @param string $content     Bytes do arquivo (ex.: file_get_contents($caminho)).
+     * @param string $filename    Nome do arquivo (ex.: "logo.png").
+     * @param string $contentType Tipo MIME (ex.: "image/png").
+     * @param array<string,scalar> $fields Campos extras do formulário.
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function uploadBrandLogo(string $content, string $filename, string $contentType = 'application/octet-stream', array $fields = [], array $options = []): ?array
+    {
+        return $this->upload('/brand/logo', $content, $filename, $contentType, $fields, $options);
+    }
+
+    /**
+     * Semáforo de status dos números por projeto. GET /projects/health
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function getProjectsHealth(array $options = []): ?array
+    {
+        return $this->call('GET', '/projects/health', [], null, $options);
+    }
+
+    /**
+     * Atualiza um projeto (admin). PATCH /projects/{id} — `api_mode` é imutável.
+     *
+     * @param array{name: string, logo_url?: string|null, color?: string|null} $body
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function updateProject(string $id, array $body, array $options = []): ?array
+    {
+        return $this->call('PATCH', '/projects/' . self::seg($id), [], $body, $options);
+    }
+
+    /**
+     * Apaga um projeto (admin). DELETE /projects/{id}
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function deleteProject(string $id, array $options = []): ?array
+    {
+        return $this->call('DELETE', '/projects/' . self::seg($id), [], null, $options);
+    }
+
+    /**
+     * Identidade dos números de um projeto específico. GET /projects/{id}/brand
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function getProjectBrand(string $id, array $options = []): ?array
+    {
+        return $this->call('GET', '/projects/' . self::seg($id) . '/brand', [], null, $options);
+    }
+
+    /**
+     * Salva a identidade dos números de um projeto (admin). PUT /projects/{id}/brand
+     *
+     * @param BrandProfile $body
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function setProjectBrand(string $id, array $body, array $options = []): ?array
+    {
+        return $this->call('PUT', '/projects/' . self::seg($id) . '/brand', [], $body, $options);
+    }
+
+    /**
+     * Envia o logo de um projeto (multipart, PNG/JPEG/WebP até 5 MB) — admin.
+     * POST /projects/{id}/logo
+     *
+     * @param array<string,scalar> $fields
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function uploadProjectLogo(string $id, string $content, string $filename, string $contentType = 'application/octet-stream', array $fields = [], array $options = []): ?array
+    {
+        return $this->upload('/projects/' . self::seg($id) . '/logo', $content, $filename, $contentType, $fields, $options);
+    }
+
+    // ---------------------------------------------------------------------
+    // Contatos (CRM), tags, grupos de contato, supressões
+    // ---------------------------------------------------------------------
+
+    /**
+     * Cria um contato (idempotente pelo telefone: se já existe, só completa campos
+     * vazios). POST /contacts
+     *
+     * @param ContactInput $body `phone` obrigatório (+DDIdígitos).
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function createContact(array $body, array $options = []): ?array
+    {
+        return $this->call('POST', '/contacts', [], $body, $options);
+    }
+
+    /**
+     * Detalha um contato. GET /contacts/{id}
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function getContact(string $id, array $options = []): ?array
+    {
+        return $this->call('GET', '/contacts/' . self::seg($id), [], null, $options);
+    }
+
+    /**
+     * Atualização parcial dos campos de CRM do contato. PATCH /contacts/{id}
+     *
+     * @param ContactInput $body Chave ausente = não mexe; `null` = limpa.
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function updateContact(string $id, array $body, array $options = []): ?array
+    {
+        return $this->call('PATCH', '/contacts/' . self::seg($id), [], $body, $options);
+    }
+
+    /**
+     * Apaga um contato. DELETE /contacts/{id}
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function deleteContact(string $id, array $options = []): ?array
+    {
+        return $this->call('DELETE', '/contacts/' . self::seg($id), [], null, $options);
+    }
+
+    /**
+     * Linha do tempo do contato (mensagens + eventos). GET /contacts/{id}/history
+     *
+     * @param array{limit?: int} $params
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function getContactHistory(string $id, array $params = [], array $options = []): ?array
+    {
+        return $this->call('GET', '/contacts/' . self::seg($id) . '/history', self::pick($params, ['limit']), null, $options);
+    }
+
+    /**
+     * Adiciona uma nota interna ao contato. POST /contacts/{id}/notes
+     *
+     * @param array{body: string} $body
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function addContactNote(string $id, array $body, array $options = []): ?array
+    {
+        return $this->call('POST', '/contacts/' . self::seg($id) . '/notes', [], $body, $options);
+    }
+
+    /**
+     * Adiciona/remove tags do contato (chaves desconhecidas em `add` são criadas).
+     * POST /contacts/{id}/tags
+     *
+     * @param array{add?: list<string>, remove?: list<string>} $body
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function mutateContactTags(string $id, array $body, array $options = []): ?array
+    {
+        return $this->call('POST', '/contacts/' . self::seg($id) . '/tags', [], $body, $options);
+    }
+
+    /**
+     * Adiciona/remove grupos de contato. POST /contacts/{id}/groups
+     *
+     * @param array{add?: list<string>, remove?: list<string>} $body
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function mutateContactGroups(string $id, array $body, array $options = []): ?array
+    {
+        return $this->call('POST', '/contacts/' . self::seg($id) . '/groups', [], $body, $options);
+    }
+
+    /**
+     * Registra o opt-out do contato (LGPD). POST /contacts/{id}/optout
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function optOutContact(string $id, array $options = []): ?array
+    {
+        return $this->call('POST', '/contacts/' . self::seg($id) . '/optout', [], null, $options);
+    }
+
+    /**
+     * Suprime o contato manualmente. POST /contacts/{id}/suppress
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function suppressContact(string $id, array $options = []): ?array
+    {
+        return $this->call('POST', '/contacts/' . self::seg($id) . '/suppress', [], null, $options);
+    }
+
+    /**
+     * Reativa o contato (remove a supressão/opt-out). POST /contacts/{id}/optin
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function optInContact(string $id, array $options = []): ?array
+    {
+        return $this->call('POST', '/contacts/' . self::seg($id) . '/optin', [], null, $options);
+    }
+
+    /**
+     * Dicionário de tags. GET /tags
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function listTags(array $options = []): ?array
+    {
+        return $this->call('GET', '/tags', [], null, $options);
+    }
+
+    /**
+     * Cria uma tag. POST /tags
+     *
+     * @param array{key: string, name?: string, color?: string} $body
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function createTag(array $body, array $options = []): ?array
+    {
+        return $this->call('POST', '/tags', [], $body, $options);
+    }
+
+    /**
+     * Apaga uma tag. DELETE /tags/{id}
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function deleteTag(string $id, array $options = []): ?array
+    {
+        return $this->call('DELETE', '/tags/' . self::seg($id), [], null, $options);
+    }
+
+    /**
+     * Dicionário de grupos de contato. GET /contact-groups
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function listContactGroups(array $options = []): ?array
+    {
+        return $this->call('GET', '/contact-groups', [], null, $options);
+    }
+
+    /**
+     * Cria um grupo de contato. POST /contact-groups
+     *
+     * @param array{key: string, name?: string, color?: string} $body
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function createContactGroup(array $body, array $options = []): ?array
+    {
+        return $this->call('POST', '/contact-groups', [], $body, $options);
+    }
+
+    /**
+     * Apaga um grupo de contato. DELETE /contact-groups/{id}
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function deleteContactGroup(string $id, array $options = []): ?array
+    {
+        return $this->call('DELETE', '/contact-groups/' . self::seg($id), [], null, $options);
+    }
+
+    /**
+     * Lista de supressão. GET /suppressions
+     *
+     * @param array{limit?: int} $params
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function listSuppressions(array $params = [], array $options = []): ?array
+    {
+        return $this->call('GET', '/suppressions', self::pick($params, ['limit']), null, $options);
+    }
+
+    /**
+     * Adiciona um número à lista de supressão. POST /suppressions
+     *
+     * @param array{phone: string, reason?: string} $body
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function createSuppression(array $body, array $options = []): ?array
+    {
+        return $this->call('POST', '/suppressions', [], $body, $options);
+    }
+
+    /**
+     * Remove um número da lista de supressão. DELETE /suppressions?phone=
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function deleteSuppression(string $phone, array $options = []): ?array
+    {
+        return $this->call('DELETE', '/suppressions', ['phone' => $phone], null, $options);
+    }
+
+    // ---------------------------------------------------------------------
+    // Cobrança: plano, add-ons, faturas
+    // ---------------------------------------------------------------------
+
+    /**
+     * Limites efetivos da conta (plano + add-ons + uso). GET /me/entitlements
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function getMyEntitlements(array $options = []): ?array
+    {
+        return $this->call('GET', '/me/entitlements', [], null, $options);
+    }
+
+    /**
+     * Coloca o Pro no carrinho (pendente até pagar). POST /me/plan/upgrade
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function upgradePlan(array $options = []): ?array
+    {
+        return $this->call('POST', '/me/plan/upgrade', [], null, $options);
+    }
+
+    /**
+     * Cancela o Pro no fim do ciclo atual. POST /me/plan/cancel
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function cancelPlan(array $options = []): ?array
+    {
+        return $this->call('POST', '/me/plan/cancel', [], null, $options);
+    }
+
+    /**
+     * Desfaz um cancelamento agendado do Pro. POST /me/plan/uncancel
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function uncancelPlan(array $options = []): ?array
+    {
+        return $this->call('POST', '/me/plan/uncancel', [], null, $options);
+    }
+
+    /**
+     * Estado do plano/assinatura (null no Free). GET /me/subscription
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function getMySubscription(array $options = []): ?array
+    {
+        return $this->call('GET', '/me/subscription', [], null, $options);
+    }
+
+    /**
+     * Soma (+) ou tira (−) add-ons do carrinho (exige Pro — 409 `not_pro`). POST /me/addons
+     *
+     * @param array{kind: 'number'|'project'|'storage_gb'|'retention_block'|'campaigns'|'schedule_year', delta: int} $body
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function changeAddon(array $body, array $options = []): ?array
+    {
+        return $this->call('POST', '/me/addons', [], $body, $options);
+    }
+
+    /**
+     * Estado do carrinho (Pro/add-ons pendentes + total proporcional). GET /me/addons/cart
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function getAddonCart(array $options = []): ?array
+    {
+        return $this->call('GET', '/me/addons/cart', [], null, $options);
+    }
+
+    /**
+     * Esvazia o carrinho. DELETE /me/addons/cart
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function clearAddonCart(array $options = []): ?array
+    {
+        return $this->call('DELETE', '/me/addons/cart', [], null, $options);
+    }
+
+    /**
+     * Paga o carrinho: cria a fatura e devolve o `client_secret` do Stripe.
+     * POST /me/addons/cart/checkout
+     *
+     * @param array{save_card?: bool} $body
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function checkoutAddonCart(array $body = [], array $options = []): ?array
+    {
+        return $this->call('POST', '/me/addons/cart/checkout', [], $body, $options);
+    }
+
+    /**
+     * Faturas da conta (últimas 24). GET /me/invoices
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function listMyInvoices(array $options = []): ?array
+    {
+        return $this->call('GET', '/me/invoices', [], null, $options);
+    }
+
+    /**
+     * Reabre o pagamento de uma fatura em aberto. POST /me/invoices/{id}/pay
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null { client_secret }
+     */
+    public function payInvoice(string $id, array $options = []): ?array
+    {
+        return $this->call('POST', '/me/invoices/' . self::seg($id) . '/pay', [], null, $options);
+    }
+
+    /**
+     * Chave publicável do Stripe para o checkout no front. GET /billing/config
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function getBillingConfig(array $options = []): ?array
+    {
+        return $this->call('GET', '/billing/config', [], null, $options);
+    }
+
+    /**
+     * Tabela de preços pública por moeda. GET /pricing
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function getPricing(array $options = []): ?array
+    {
+        return $this->call('GET', '/pricing', [], null, $options);
+    }
+
+    // ---------------------------------------------------------------------
+    // Avançado: editar/apagar/encaminhar, lido, privacidade, chats, etiquetas,
+    // bloqueio e chamadas
+    // ---------------------------------------------------------------------
+
+    /**
+     * Edita o texto de uma mensagem enviada. PATCH /messages/{id}
+     *
+     * @param array{text: string} $body
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function editMessage(string $id, array $body, array $options = []): ?array
+    {
+        return $this->call('PATCH', '/messages/' . self::seg($id), [], $body, $options);
+    }
+
+    /**
+     * Apaga uma mensagem (para todos). DELETE /messages/{id}?for_everyone=
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function revokeMessage(string $id, ?bool $forEveryone = null, array $options = []): ?array
+    {
+        return $this->call('DELETE', '/messages/' . self::seg($id), ['for_everyone' => $forEveryone], null, $options);
+    }
+
+    /**
+     * Encaminha uma mensagem (experimental). POST /messages/forward
+     *
+     * @param array{instance_id: string, to: string, from_chat: string, wa_message_id: string} $body
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function forwardMessage(array $body, array $options = []): ?array
+    {
+        return $this->call('POST', '/messages/forward', [], $body, $options);
+    }
+
+    /**
+     * Marca mensagens como lidas. POST /messages/{id}/read
+     *
+     * @param array{instance_id: string, chat: string, wa_message_ids?: list<string>, sender?: string} $body
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function markRead(string $id, array $body, array $options = []): ?array
+    {
+        return $this->call('POST', '/messages/' . self::seg($id) . '/read', [], $body, $options);
+    }
+
+    /**
+     * Ajusta uma configuração de privacidade do número. PATCH /instances/{id}/privacy
+     *
+     * @param array{setting: string, value: string} $body ex.: setting "last", value "contacts".
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function setPrivacy(string $id, array $body, array $options = []): ?array
+    {
+        return $this->call('PATCH', '/instances/' . self::seg($id) . '/privacy', [], $body, $options);
+    }
+
+    /**
+     * Silencia/dessilencia um chat. POST /chats/{jid}/mute body { instance_id, on }
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function muteChat(string $instanceId, string $jid, bool $on = true, array $options = []): ?array
+    {
+        return $this->call('POST', '/chats/' . self::seg($jid, 'jid') . '/mute', [], ['instance_id' => $instanceId, 'on' => $on], $options);
+    }
+
+    /**
+     * Aplica/remove uma etiqueta num chat (experimental).
+     * POST /chats/{jid}/labels body { instance_id, label_id, apply }
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function applyChatLabel(string $instanceId, string $jid, string $labelId, bool $apply = true, array $options = []): ?array
+    {
+        return $this->call(
+            'POST',
+            '/chats/' . self::seg($jid, 'jid') . '/labels',
+            [],
+            ['instance_id' => $instanceId, 'label_id' => $labelId, 'apply' => $apply],
+            $options
+        );
+    }
+
+    /**
+     * Etiquetas do número (experimental). GET /labels?instance_id=
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function listLabels(string $instanceId, array $options = []): ?array
+    {
+        return $this->call('GET', '/labels', ['instance_id' => $instanceId], null, $options);
+    }
+
+    /**
+     * Cria uma etiqueta (experimental). POST /labels
+     *
+     * @param array{instance_id: string, name: string, color?: string} $body
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function createLabel(array $body, array $options = []): ?array
+    {
+        return $this->call('POST', '/labels', [], $body, $options);
+    }
+
+    /**
+     * Apaga uma etiqueta (experimental). DELETE /labels/{id}?instance_id=
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function deleteLabel(string $instanceId, string $id, array $options = []): ?array
+    {
+        return $this->call('DELETE', '/labels/' . self::seg($id), ['instance_id' => $instanceId], null, $options);
+    }
+
+    /**
+     * Bloqueia um contato. POST /contacts/{jid}/block body { instance_id }
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function blockContact(string $instanceId, string $jid, array $options = []): ?array
+    {
+        return $this->call('POST', '/contacts/' . self::seg($jid, 'jid') . '/block', [], ['instance_id' => $instanceId], $options);
+    }
+
+    /**
+     * Desbloqueia um contato. POST /contacts/{jid}/unblock body { instance_id }
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function unblockContact(string $instanceId, string $jid, array $options = []): ?array
+    {
+        return $this->call('POST', '/contacts/' . self::seg($jid, 'jid') . '/unblock', [], ['instance_id' => $instanceId], $options);
+    }
+
+    /**
+     * Contatos bloqueados. GET /blocklist?instance_id=
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function getBlocklist(string $instanceId, array $options = []): ?array
+    {
+        return $this->call('GET', '/blocklist', ['instance_id' => $instanceId], null, $options);
+    }
+
+    /**
+     * Rejeita uma chamada. POST /calls/reject
+     *
+     * @param array{instance_id: string, call_from: string, call_id: string} $body
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function rejectCall(array $body, array $options = []): ?array
+    {
+        return $this->call('POST', '/calls/reject', [], $body, $options);
+    }
+
+    /**
+     * Inicia uma chamada (experimental). POST /calls/offer
+     *
+     * @param array{instance_id: string, to: string, video?: bool} $body
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function offerCall(array $body, array $options = []): ?array
+    {
+        return $this->call('POST', '/calls/offer', [], $body, $options);
+    }
+
+    // ---------------------------------------------------------------------
+    // Números (instâncias): ciclo de vida, proxy, filtros de entrada, API oficial
+    // ---------------------------------------------------------------------
+
+    /**
+     * Remove uma instância (encerra a sessão). DELETE /instances/{id}
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function deleteInstance(string $id, array $options = []): ?array
+    {
+        return $this->call('DELETE', '/instances/' . self::seg($id), [], null, $options);
+    }
+
+    /**
+     * Logout (exige novo QR depois). POST /instances/{id}/logout
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function logoutInstance(string $id, array $options = []): ?array
+    {
+        return $this->call('POST', '/instances/' . self::seg($id) . '/logout', [], null, $options);
+    }
+
+    /**
+     * Arquiva (desativa) um número mantendo o histórico. POST /instances/{id}/archive
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function archiveInstance(string $id, array $options = []): ?array
+    {
+        return $this->call('POST', '/instances/' . self::seg($id) . '/archive', [], null, $options);
+    }
+
+    /**
+     * Reativa um número arquivado (volta desconectado). POST /instances/{id}/unarchive
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function unarchiveInstance(string $id, array $options = []): ?array
+    {
+        return $this->call('POST', '/instances/' . self::seg($id) . '/unarchive', [], null, $options);
+    }
+
+    /**
+     * Define o proxy da instância (isolamento de rede/IP). PATCH /instances/{id}/proxy
+     *
+     * @param array{proxy_url: string} $body `""` remove o proxy.
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function setInstanceProxy(string $id, array $body, array $options = []): ?array
+    {
+        return $this->call('PATCH', '/instances/' . self::seg($id) . '/proxy', [], $body, $options);
+    }
+
+    /**
+     * Filtros de entrada (broadcast/status/grupos). PATCH /instances/{id}/inbound-filters
+     *
+     * @param array{ignore_broadcast?: bool, ignore_status?: bool, ignore_groups?: bool, group_allowlist?: list<string>, group_denylist?: list<string>} $body
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function setInboundFilters(string $id, array $body, array $options = []): ?array
+    {
+        return $this->call('PATCH', '/instances/' . self::seg($id) . '/inbound-filters', [], $body, $options);
+    }
+
+    /**
+     * Conta WhatsApp Business (Cloud API) conectada ao projeto. GET /official/account
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function getOfficialAccount(array $options = []): ?array
+    {
+        return $this->call('GET', '/official/account', [], null, $options);
+    }
+
+    /**
+     * Conecta uma conta WhatsApp Business ao projeto (credenciais manuais; o token é
+     * guardado cifrado e nunca devolvido). POST /official/account
+     *
+     * @param array{waba_id: string, phone_number_id: string, access_token: string, display_number?: string, verified_name?: string, status?: 'PENDENTE'|'AGUARDANDO_PAGAMENTO'|'ATIVA'} $body
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function connectOfficialAccount(array $body, array $options = []): ?array
+    {
+        return $this->call('POST', '/official/account', [], $body, $options);
+    }
+
+    /**
+     * Desconecta a conta WhatsApp Business do projeto. DELETE /official/account
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function disconnectOfficialAccount(array $options = []): ?array
+    {
+        return $this->call('DELETE', '/official/account', [], null, $options);
+    }
+
+    // ---------------------------------------------------------------------
+    // Grupos: configurações e pedidos de entrada
+    // ---------------------------------------------------------------------
+
+    /**
+     * Atualiza nome/descrição/configurações do grupo. PATCH /groups/{jid}?instance_id=
+     *
+     * @param array{name?: string, topic?: string, announce?: bool, locked?: bool} $body
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function updateGroup(string $instanceId, string $jid, array $body, array $options = []): ?array
+    {
+        return $this->call('PATCH', '/groups/' . self::seg($jid, 'jid'), ['instance_id' => $instanceId], $body, $options);
+    }
+
+    /**
+     * Pedidos de entrada pendentes. GET /groups/{jid}/join-requests?instance_id=
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function listJoinRequests(string $instanceId, string $jid, array $options = []): ?array
+    {
+        return $this->call('GET', '/groups/' . self::seg($jid, 'jid') . '/join-requests', ['instance_id' => $instanceId], null, $options);
+    }
+
+    /**
+     * Aprova/rejeita pedidos de entrada. POST /groups/{jid}/join-requests?instance_id=
+     *
+     * @param array{participants: list<string>, approve: bool} $body
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function updateJoinRequests(string $instanceId, string $jid, array $body, array $options = []): ?array
+    {
+        return $this->call('POST', '/groups/' . self::seg($jid, 'jid') . '/join-requests', ['instance_id' => $instanceId], $body, $options);
+    }
+
+    // ---------------------------------------------------------------------
+    // Campanhas: elegibilidade e mídia
+    // ---------------------------------------------------------------------
+
+    /**
+     * Elegibilidade de cada número para campanha (conexão + aquecimento).
+     * GET /campaigns/eligibility?pool_id=
+     *
+     * @param array{pool_id?: string} $params
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function getCampaignEligibility(array $params = [], array $options = []): ?array
+    {
+        return $this->call('GET', '/campaigns/eligibility', self::pick($params, ['pool_id']), null, $options);
+    }
+
+    /**
+     * Envia a imagem de cabeçalho da campanha (multipart, campo `file`). POST /campaigns/media
+     *
+     * @param array<string,scalar> $fields
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function uploadCampaignMedia(string $content, string $filename, string $contentType = 'application/octet-stream', array $fields = [], array $options = []): ?array
+    {
+        return $this->upload('/campaigns/media', $content, $filename, $contentType, $fields, $options);
+    }
+
+    // ---------------------------------------------------------------------
+    // Webhooks: evento de teste no projeto
+    // ---------------------------------------------------------------------
+
+    /**
+     * Emite um evento de exemplo no stream e nos webhooks do projeto (como o
+     * `stripe trigger`). POST /webhooks/trigger
+     *
+     * @param array{event_type?: string} $body
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function triggerWebhookEvent(array $body = [], array $options = []): ?array
+    {
+        return $this->call('POST', '/webhooks/trigger', [], $body, $options);
+    }
+
+    // ---------------------------------------------------------------------
+    // Pools (grupos de números para rotação)
+    // ---------------------------------------------------------------------
+
+    /**
+     * Pools do tenant. GET /pools
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function listPools(array $options = []): ?array
+    {
+        return $this->call('GET', '/pools', [], null, $options);
+    }
+
+    /**
+     * Cria um pool de números. POST /pools
+     *
+     * @param array{name?: string, strategy?: 'round_robin'|'least_used'|'health_weighted', is_default?: bool} $body
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function createPool(array $body, array $options = []): ?array
+    {
+        return $this->call('POST', '/pools', [], $body, $options);
+    }
+
+    /**
+     * Detalha um pool (com membros). GET /pools/{id}
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function getPool(string $id, array $options = []): ?array
+    {
+        return $this->call('GET', '/pools/' . self::seg($id), [], null, $options);
+    }
+
+    /**
+     * Adiciona um número ao pool. POST /pools/{id}/numbers
+     *
+     * @param array{instance_id: string} $body
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function addPoolNumber(string $id, array $body, array $options = []): ?array
+    {
+        return $this->call('POST', '/pools/' . self::seg($id) . '/numbers', [], $body, $options);
     }
 
     // ---------------------------------------------------------------------
     // Internos
     // ---------------------------------------------------------------------
+
+    /**
+     * Upload multipart (campo `file`) com as mesmas garantias de idempotência/retry.
+     *
+     * @param array<string,scalar> $fields
+     * @param array{idempotency_key?: string, timeout?: int|float} $options
+     * @return array<string,mixed>|null
+     */
+    private function upload(string $path, string $content, string $filename, string $contentType, array $fields, array $options): ?array
+    {
+        if ($filename === '') {
+            throw new \InvalidArgumentException('filename não pode ser vazio.');
+        }
+        return $this->call('POST', $path, [], null, $options, [
+            'fields' => $fields,
+            'file' => ['name' => 'file', 'filename' => $filename, 'content' => $content, 'content_type' => $contentType],
+        ]);
+    }
+
+    /**
+     * Copia de `$src` só as chaves listadas que foram informadas.
+     *
+     * @param array<string,mixed> $src
+     * @param list<string> $keys
+     * @return array<string,mixed>
+     */
+    private static function pick(array $src, array $keys): array
+    {
+        $out = [];
+        foreach ($keys as $k) {
+            if (array_key_exists($k, $src)) {
+                $out[$k] = $src[$k];
+            }
+        }
+        return $out;
+    }
 
     /**
      * POST de envio: `$opts['idempotency_key']` vira o header `Idempotency-Key`.
@@ -1174,11 +2222,11 @@ final class Client
      */
     private function send(string $path, array $payload, array $opts): array
     {
-        $headers = [];
+        $options = [];
         if (isset($opts['idempotency_key']) && $opts['idempotency_key'] !== '') {
-            $headers[] = 'Idempotency-Key: ' . $opts['idempotency_key'];
+            $options['idempotency_key'] = (string) $opts['idempotency_key'];
         }
-        return $this->request('POST', $path, $payload, [], $headers);
+        return $this->post($path, $payload, [], $options);
     }
 
     /**
@@ -1195,8 +2243,14 @@ final class Client
                 $payload[$k] = $opts[$k];
             }
         }
-        if (isset($opts['mentions']) && is_array($opts['mentions'])) {
-            $payload['mentions'] = array_values($opts['mentions']);
+        foreach (['mentions', 'tags', 'groups'] as $k) {
+            if (isset($opts[$k]) && is_array($opts[$k])) {
+                $payload[$k] = array_values($opts[$k]);
+            }
+        }
+        // force: envia mesmo a contato suprimido/opt-out (use com critério).
+        if (isset($opts['force'])) {
+            $payload['force'] = (bool) $opts['force'];
         }
         // Afinidade de conversa: sem instance_id/pool_id, reusa o número que já
         // fala com `to`. Padrão true; envie false para forçar rotação.

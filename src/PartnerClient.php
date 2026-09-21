@@ -74,9 +74,11 @@ final class PartnerClient
      * @param string|null $baseUrl       URL base da API. Opcional — default produção
      *                                   (https://api.bzapper.com.br); informe só em dev
      *                                   ("http://localhost:8080") ou self-host.
-     * @param array{locale?: string, timeout?: int} $opts
+     * @param array{locale?: string, timeout?: int|float, max_retries?: int, project_id?: string, sleep?: callable(float): void} $opts
      *                        locale: BCP-47 enviado em Accept-Language (ex.: "pt-BR").
-     *                        timeout: timeout total da requisição em segundos (default 30).
+     *                        timeout: timeout por tentativa em segundos (default 30).
+     *                        max_retries: novas tentativas em erro de rede/429/502/503/504
+     *                        (default 2; 0 desliga). sleep: função de espera (testes).
      */
     public function __construct(string $partnerSecret, ?string $baseUrl = null, array $opts = [])
     {
@@ -166,7 +168,7 @@ final class PartnerClient
      */
     public function getConnection(string $id): array
     {
-        return $this->get('/partner/connections/' . rawurlencode($id));
+        return $this->get('/partner/connections/' . self::seg($id));
     }
 
     /**
@@ -180,7 +182,7 @@ final class PartnerClient
      */
     public function rotateConnectionKey(string $id): array
     {
-        return $this->post('/partner/connections/' . rawurlencode($id) . '/rotate-key');
+        return $this->post('/partner/connections/' . self::seg($id) . '/rotate-key');
     }
 
     /**
@@ -191,6 +193,6 @@ final class PartnerClient
      */
     public function revokeConnection(string $id): array
     {
-        return $this->delete('/partner/connections/' . rawurlencode($id));
+        return $this->delete('/partner/connections/' . self::seg($id));
     }
 }

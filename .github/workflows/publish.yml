@@ -1,23 +1,100 @@
-# Composer/Packagist: o Packagist lê o repo público bernisoftware/bzapper-php e
-# deriva as versões das TAGS git. Com a integração GitHub↔Packagist ligada, ele
-# atualiza sozinho a cada push/tag. Este workflow só FORÇA a atualização imediata
-# (sem ele, o Packagist atualiza em alguns minutos). Requer secrets:
-#   PACKAGIST_USERNAME, PACKAGIST_TOKEN (em packagist.org > Profile > Show API Token)
+# Espelho público bernisoftware/bzapper-php (gerado por scripts/release-sdks.sh no monorepo).
+#
+# Composer/Packagist: o Packagist lê este repo e deriva as versões das TAGS git (o
+# composer.json não leva versão). Com a integração GitHub↔Packagist ligada ele atualiza
+# sozinho a cada push/tag; este workflow só publica DEPOIS da suíte verde e FORÇA a
+# atualização imediata. Secrets:
+#   PACKAGIST_USERNAME, PACKAGIST_TOKEN (packagist.org → Profile → Show API Token)
+#
+# Ordem (BRIEF §9): testes (conformidade + unitários) no PHP mínimo e máximo → build →
+# testes contra o artefato → tag == Client::VERSION → publicação.
 name: publish
+
 on:
   push:
     tags: ['v*']
+
+permissions:
+  contents: read
+
 jobs:
-  packagist:
+  test:
+    name: testes (PHP ${{ matrix.php }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        php: ['8.1', '8.4']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: curl, json
+          coverage: none
+          tools: composer:v2
+      - run: composer validate --strict --no-check-publish
+      - run: composer install --no-interaction --no-progress --prefer-dist
+      - name: PHPUnit (conformidade cases.json + unitários)
+        run: vendor/bin/phpunit
+        env:
+          BZAPPER_RELEASE_TAG: ${{ github.ref_name }}
+
+  artifact:
+    name: build + testes contra o artefato
+    needs: test
     runs-on: ubuntu-latest
     steps:
-      - name: Valida o composer.json
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
       - uses: shivammathur/setup-php@v2
         with:
           php-version: '8.1'
-      - run: composer validate --strict --no-check-publish
-      - name: Notifica o Packagist
+          extensions: curl, json
+          coverage: none
+          tools: composer:v2
+
+      - name: Tag == Client::VERSION
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          CODE_VERSION="$(sed -nE "s/.*public const VERSION = '([^']+)'.*/\1/p" src/Client.php)"
+          echo "tag=$TAG_VERSION  Client::VERSION=$CODE_VERSION"
+          if [ "$TAG_VERSION" != "$CODE_VERSION" ]; then
+            echo "::error::tag $GITHUB_REF_NAME != Client::VERSION $CODE_VERSION"
+            exit 1
+          fi
+
+      - name: Build (git archive — o mesmo conteúdo do zip que o Packagist serve)
+        run: |
+          mkdir -p build/pkg
+          git archive HEAD | tar -x -C build/pkg
+
+      - name: Instala o artefato num projeto limpo e roda a suíte contra ele
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p build/app
+          cat > build/app/composer.json <<JSON
+          {
+            "repositories": [
+              {"type": "path", "url": "../pkg", "options": {"symlink": false, "versions": {"bzapper/bzapper": "$VERSION"}}}
+            ],
+            "require": {"bzapper/bzapper": "$VERSION"},
+            "require-dev": {"phpunit/phpunit": "^10.5 || ^11.5"},
+            "autoload-dev": {"psr-4": {"Bzapper\\\\Tests\\\\": "../../tests/"}},
+            "minimum-stability": "stable"
+          }
+          JSON
+          cd build/app
+          composer install --no-interaction --no-progress
+          # garante que a classe vem do artefato instalado, não do checkout
+          php -r 'require "vendor/autoload.php"; $f = (new ReflectionClass(Bzapper\Client::class))->getFileName(); echo $f, PHP_EOL; exit(str_contains($f, "/vendor/bzapper/bzapper/") ? 0 : 1);'
+          vendor/bin/phpunit --bootstrap vendor/autoload.php ../../tests
+
+  packagist:
+    name: publica no Packagist
+    needs: artifact
+    runs-on: ubuntu-latest
+    steps:
+      - name: Força a atualização do pacote
         run: |
           curl -sf -XPOST -H 'content-type:application/json' \
             "https://packagist.org/api/update-package?username=${{ secrets.PACKAGIST_USERNAME }}&apiToken=${{ secrets.PACKAGIST_TOKEN }}" \

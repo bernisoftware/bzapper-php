@@ -90,14 +90,23 @@ try {
         echo 'Contatos verificados: ' . count($check['data'] ?? []) . "\n";
     }
 
+    // CRM: contatos com tag (métodos novos aceitam $options por chamada)
+    $contact = $bz->createContact(['phone' => $to, 'name' => 'Contato do quickstart'], ['idempotency_key' => 'quickstart-' . $to]);
+    if ($contact !== null) {
+        $bz->mutateContactTags($contact['id'], ['add' => ['quickstart']]);
+    }
+    $vips = $bz->listContacts(['tags' => ['quickstart'], 'limit' => 10]);
+    echo 'Contatos com a tag: ' . count($vips['data'] ?? []) . "\n";
+
     $usage = $bz->getUsage(['from' => '2026-01-01T00:00:00Z']);
     echo 'Total enviado: ' . ($usage['sent'] ?? 0) . "\n";
 } catch (BzapperException $e) {
     // SEMPRE use o code neutro (estável), nunca o texto da mensagem.
     fwrite(STDERR, sprintf(
-        "Erro [%s] (HTTP %d): %s\n",
+        "Erro [%s] (HTTP %d, request_id=%s): %s\n",
         $e->getErrorCode(),
         $e->getStatusCode(),
+        $e->getRequestId() ?? '-',
         $e->getMessage()
     ));
     exit(1);

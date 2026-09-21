@@ -11,8 +11,12 @@ uma API HTTP REST.
 ## Instalação
 
 ```bash
-composer require bzapper/bzapper
+composer require bzapper/bzapper:0.6.2
 ```
+
+**Fixe a versão exata** (`"bzapper/bzapper": "0.6.2"` no `composer.json`, sem `^`): cada
+release declara na nota se muda a superfície pública (aditiva × quebra) — você atualiza
+quando decidir.
 
 ## Hello world
 
@@ -32,26 +36,45 @@ O `baseUrl` tem default de produção (`https://api.bzapper.com.br`) e é **opci
 informe apenas em dev/self-host: `new Client('bz_live_...', 'http://localhost:8080')`. A API
 key (`bz_live_...`) é gerada no painel ou via `createKey()`.
 
+## Autenticação
+
+Crie a API key (`bz_live_...`) no painel do bZapper (**Projeto → API keys**) ou via
+`createKey()`. A key já pertence a um **projeto** (números, inbox, keys e estatísticas
+são isolados por projeto); para agir em outro projeto da conta, passe `project_id`
+(vai no header `X-Project-Id`). Nenhuma chamada de rede acontece na construção.
+
 ### Opções do construtor
 
 ```php
 $bz = new Client('bz_live_...', null, [
-    'locale'  => 'pt-BR', // enviado em Accept-Language
-    'timeout' => 30,      // segundos (default 30)
+    'locale'      => 'pt-BR', // Accept-Language (mensagens de erro traduzidas)
+    'timeout'     => 30,      // segundos POR TENTATIVA (default 30)
+    'max_retries' => 2,       // novas tentativas além da 1ª (default 2; 0 desliga)
+    'project_id'  => 'uuid',  // X-Project-Id (opcional)
 ]);
 ```
 
-Toda requisição envia: `Authorization: Bearer <apiKey>`,
-`Content-Type: application/json` e, se `locale` informado, `Accept-Language`.
+Toda requisição envia: `Authorization: Bearer <apiKey>`, `Accept: application/json`,
+`X-Bzapper-Client: bzapper-php/<versão>` (também como `User-Agent` — é por ele que a API
+avisa você quando a versão que roda precisa de atualização), `X-Request-Id` (um por
+chamada), `Idempotency-Key` em POST/PUT/PATCH/DELETE e, só quando há corpo,
+`Content-Type: application/json`.
 
-Os métodos retornam o corpo JSON da API como **array associativo**.
+Os métodos retornam o corpo JSON da API como **array associativo** (listas vêm no
+objeto inteiro, ex.: `['data' => [...], 'total' => ...]`). Os métodos adicionados no
+padrão r2 (os que recebem `$options` por último) devolvem `null` quando a API responde
+sem corpo (204); os que já existiam continuam devolvendo `[]`. Esse último argumento é
+`$options`
+(`['idempotency_key' => '...', 'timeout' => 10]`, por chamada).
 
 ## Campos comuns de envio (SendBase)
 
 Todos os `send*` aceitam um último argumento `$opts` (array) com os campos
 comuns: `instance_id`, `pool_id`, `quoted_message_id`, `quoted_participant`
 (autor da mensagem citada — só em grupo, quando ela não está no histórico),
-`client_reference` e `mentions` (array de JIDs ou telefones). Omita
+`client_reference`, `mentions` (array de JIDs ou telefones), `scheduled_at`
+(agendamento, RFC3339), `sticky`, `tags`/`groups` (chaves de tag/grupo aplicadas ao
+contato no CRM) e `force` (envia mesmo a contato suprimido/opt-out). Omita
 `instance_id`/`pool_id` para deixar a rotação escolher o número.
 
 `idempotency_key` (até 255 caracteres) vai no header `Idempotency-Key`, não no
@@ -176,8 +199,165 @@ $bz->leaveGroup($inst, $grupo);
 // Contatos — quais telefones têm WhatsApp
 $bz->contactsCheck($inst, ['+5511999999999', '+5511888887777']);
 
-// Perfil da instância
+// Perfil e privacidade da instância
 $bz->setProfile($inst, ['display_name' => 'Atendimento', 'status_message' => 'Online 24/7']);
+$bz->setPrivacy($inst, ['setting' => 'last', 'value' => 'contacts']);
+
+// Grupo: configurações, novo link e pedidos de entrada
+$bz->updateGroup($inst, $grupo, ['topic' => 'Metas do mês', 'announce' => true]);
+$bz->groupInvite($inst, $grupo, true); // reset = true revoga o link atual
+$bz->listJoinRequests($inst, $grupo);
+$bz->updateJoinRequests($inst, $grupo, ['participants' => ['5511888887777@s.whatsapp.net'], 'approve' => true]);
+
+// Chats: silenciar e etiquetas (etiquetas são experimentais)
+$bz->muteChat($inst, $grupo, true);
+$label = $bz->createLabel(['instance_id' => $inst, 'name' => 'Lead quente', 'color' => '#ef4444']);
+$bz->applyChatLabel($inst, '5511999999999@s.whatsapp.net', $label['id'], true);
+$bz->listLabels($inst);
+$bz->deleteLabel($inst, $label['id']);
+```
+
+## Mensagens avançadas: editar, apagar, encaminhar, lido, bloqueio, chamadas
+
+```php
+$bz->editMessage('message-id', ['text' => 'Texto corrigido']);
+$bz->revokeMessage('message-id', true); // apaga para todos
+$bz->forwardMessage([
+    'instance_id' => $inst, 'to' => '5511888887777',
+    'from_chat' => '5511999999999@s.whatsapp.net', 'wa_message_id' => '3EB0...',
+]);
+$bz->markRead('message-id', ['instance_id' => $inst, 'chat' => '5511999999999@s.whatsapp.net']);
+
+$bz->blockContact($inst, '5511999999999@s.whatsapp.net');
+$bz->unblockContact($inst, '5511999999999@s.whatsapp.net');
+$bz->getBlocklist($inst);
+
+$bz->rejectCall(['instance_id' => $inst, 'call_from' => '5511999999999@s.whatsapp.net', 'call_id' => 'ABC']);
+$bz->offerCall(['instance_id' => $inst, 'to' => '5511999999999', 'video' => false]); // experimental
+
+// Agendamentos (scheduled_at em qualquer send*)
+$bz->sendText('+5511999999999', 'Lembrete', ['scheduled_at' => '2026-10-01T12:00:00Z']);
+$bz->listScheduled(['limit' => 50]);
+$bz->cancelScheduled('scheduled-id');
+```
+
+## Contatos (CRM), tags, grupos de contato e supressões
+
+O vínculo contato ↔ projeto/número é mantido **automaticamente** pela API; os filtros
+só leem.
+
+```php
+$page = $bz->listContacts([
+    'search' => 'ana', 'tags' => ['vip', 'b2b'], 'tags_match' => 'all', 'has_email' => true,
+    'created_after' => new DateTimeImmutable('-30 days'), 'limit' => 50, 'offset' => 0,
+]);
+foreach ($page['data'] as $c) { echo $c['name'], ' ', $c['phone'], "\n"; }
+
+$c = $bz->createContact(['phone' => '+5511999998888', 'name' => 'Ana', 'email' => 'ana@exemplo.com']);
+$bz->getContact($c['id']);
+$bz->updateContact($c['id'], ['document' => null]); // chave ausente = não mexe; null = limpa
+$bz->mutateContactTags($c['id'], ['add' => ['vip'], 'remove' => ['lead']]);
+$bz->mutateContactGroups($c['id'], ['add' => ['clientes-sp']]);
+$bz->addContactNote($c['id'], ['body' => 'Prefere contato à tarde.']);
+$bz->getContactHistory($c['id'], ['limit' => 20]);
+$bz->optOutContact($c['id']);   // LGPD
+$bz->optInContact($c['id']);
+$bz->suppressContact($c['id']);
+$bz->deleteContact($c['id']);
+
+$bz->listTags();
+$bz->createTag(['key' => 'vip', 'name' => 'VIP', 'color' => '#22c55e']);
+$bz->deleteTag('tag-id');
+$bz->listContactGroups();
+$bz->createContactGroup(['key' => 'clientes-sp', 'name' => 'Clientes SP']);
+$bz->deleteContactGroup('group-id');
+
+$bz->listSuppressions(['limit' => 100]);
+$bz->createSuppression(['phone' => '+5511999998888', 'reason' => 'pediu para sair']);
+$bz->deleteSuppression('+5511999998888');
+```
+
+## Campanhas
+
+```php
+$camp = $bz->createCampaign(
+    [['body' => 'Oi {nome}! {Promoção|Oferta} de hoje: ...', 'weight' => 1]],
+    ['name' => 'Black Friday', 'pacing_profile' => 'conservative']
+);
+$bz->estimateCampaign(5000, 'conservative');
+$bz->getCampaignEligibility(['pool_id' => 'pool-id']);
+$bz->uploadCampaignMedia(file_get_contents('banner.png'), 'banner.png', 'image/png');
+$bz->addCampaignRecipients($camp['id'], ['contact_filter' => ['tags' => ['vip']]]);
+$bz->dryRunCampaign($camp['id']);
+$bz->startCampaign($camp['id']);
+$bz->pauseCampaign($camp['id']);
+$bz->resumeCampaign($camp['id']);
+$bz->listCampaignRecipients($camp['id'], ['limit' => 100]);
+```
+
+## Pools de números
+
+```php
+$pool = $bz->createPool(['name' => 'Vendas', 'strategy' => 'round_robin']);
+$bz->addPoolNumber($pool['id'], ['instance_id' => 'uuid-do-numero']);
+$bz->getPool($pool['id']);
+$bz->listPools();
+$bz->sendText('+5511999999999', 'Oi', ['pool_id' => $pool['id']]); // rotação dentro do pool
+```
+
+## Projetos, usuários, marca e conta
+
+```php
+$bz->listProjects();
+$p = $bz->createProject('Loja 2', 'UNOFFICIAL'); // api_mode é imutável
+$bz->updateProject($p['id'], ['name' => 'Loja 2 — SP']);
+$bz->getProjectsHealth();
+$bz->getProjectBrand($p['id']);
+$bz->setProjectBrand($p['id'], ['about' => 'Atendimento Loja 2']);
+$bz->uploadProjectLogo($p['id'], file_get_contents('logo.png'), 'logo.png', 'image/png');
+$bz->deleteProject($p['id']);
+
+$bz->setBrand(['about' => 'Atendimento oficial', 'website' => 'https://exemplo.com']);
+$bz->uploadBrandLogo(file_get_contents('logo.png'), 'logo.png', 'image/png');
+$bz->applyBrand();
+
+$bz->getMe();
+$bz->updateProfile(['name' => 'Ana', 'job_title' => 'Suporte']);
+$bz->updateAccount(['name' => 'Minha Empresa Ltda']);
+$bz->inviteUser('ana@exemplo.com', 'Ana', 'agent');
+$bz->getAccountUsage(['from' => '2026-09-01T00:00:00Z']);
+$bz->getHealth();
+```
+
+## Cobrança (plano e add-ons)
+
+```php
+$bz->getPricing();
+$bz->getMyEntitlements();
+$bz->getMySubscription();
+$bz->upgradePlan();                                   // Pro no carrinho
+$bz->changeAddon(['kind' => 'number', 'delta' => 2]); // +2 números
+$bz->getAddonCart();
+$pay = $bz->checkoutAddonCart(['save_card' => true]); // client_secret do Stripe
+$bz->listMyInvoices();
+$bz->payInvoice('invoice-id');
+$bz->cancelPlan();   // no fim do ciclo
+$bz->uncancelPlan();
+```
+
+## API oficial (WhatsApp Cloud API) e ciclo de vida do número
+
+```php
+$bz->getOfficialAccount();
+$bz->connectOfficialAccount(['waba_id' => '...', 'phone_number_id' => '...', 'access_token' => '...']);
+$bz->disconnectOfficialAccount();
+
+$bz->setInstanceProxy('uuid', ['proxy_url' => 'http://user:pass@proxy:8080']);
+$bz->setInboundFilters('uuid', ['ignore_status' => true, 'ignore_groups' => false]);
+$bz->logoutInstance('uuid');     // exige novo QR
+$bz->archiveInstance('uuid');    // mantém o histórico
+$bz->unarchiveInstance('uuid');
+$bz->deleteInstance('uuid');
 ```
 
 > **Dica:** `presenceChat` aceita JID de grupo em `$to`, então você pode mostrar
@@ -219,6 +399,7 @@ $rot = $bz->updateWebhook($wh['id'], ['secret' => 'regenerate']);
 echo $rot['secret']; // novo segredo, mostrado só agora
 
 $bz->testWebhook($wh['id'], 'message.received'); // dispara evento de teste
+$bz->triggerWebhookEvent(['event_type' => 'message.received']); // evento de exemplo no projeto (stripe trigger)
 $bz->webhookDeliveries($wh['id'], 20);           // entregas recentes (limit opcional)
 
 $bz->deleteWebhook($wh['id']);
@@ -455,29 +636,60 @@ $usage = $bz->getUsage(['from' => '2026-01-01T00:00:00Z', 'to' => '2026-02-01T00
 echo $usage['sent'], '/', $usage['total'];
 ```
 
-## Tratamento de erro
+## Erros, novas tentativas e idempotência
 
-Qualquer resposta não-2xx lança `Bzapper\BzapperException`. **Use sempre o
-código neutro estável** (`getErrorCode()`) na sua lógica — nunca dê parse na
-mensagem (que é traduzida conforme o locale, só para humanos). Obs.: o nativo
-`getCode()` do PHP é `int` e final, então o status HTTP fica lá e em
-`getStatusCode()`; o código neutro fica em `getErrorCode()`.
+Qualquer resposta não-2xx lança `Bzapper\BzapperException` (ou uma subclasse). **Use
+sempre o código neutro estável** (`getErrorCode()`) na sua lógica — nunca dê parse na
+mensagem (traduzida conforme o locale, só para humanos). O nativo `getCode()` do PHP é
+`int`, então o status HTTP fica lá e em `getStatusCode()`/`getStatus()`.
+
+| Classe (todas herdam de `BzapperException`) | Quando |
+|---|---|
+| `AuthenticationException` | 401 |
+| `PermissionDeniedException` | 403 (`getRequiredScope()` em erro de escopo) |
+| `NotFoundException` | 404 |
+| `ConflictException` | 409 |
+| `ValidationException` | 400 e 422 |
+| `RateLimitException` | 429 (`getRetryAfter()` em segundos) |
+| `ServerException` | 5xx |
+| `NetworkException` | conexão/timeout — status `0`, código `NETWORK_ERROR` |
+| `BzapperException` | qualquer outro status; `INVALID_RESPONSE` se um 2xx não vier em JSON |
+
+Parâmetro de caminho vazio, `"."` ou `".."` e chave vazia lançam
+`\InvalidArgumentException` **antes** de qualquer requisição.
 
 ```php
 use Bzapper\BzapperException;
+use Bzapper\RateLimitException;
 
 try {
     $bz->sendText('+5511999999999', 'Oi');
+} catch (RateLimitException $e) {
+    sleep($e->getRetryAfter() ?? 1);
 } catch (BzapperException $e) {
-    $e->getErrorCode();   // ex.: "not_connected", "rate_limited", "unauthorized" (use ESTE)
-    $e->getStatusCode();  // ex.: 409, 429, 401
+    $e->getErrorCode();   // ex.: "instance_not_connected", "unauthorized" (use ESTE)
+    $e->getStatusCode();  // ex.: 409, 401 (0 em erro de rede)
+    $e->getRequestId();   // X-Request-Id — informe ao suporte
     $e->getMessage();     // texto traduzido (só para humanos)
     $e->getLocale();      // ex.: "pt-BR"
-
-    if ($e->getErrorCode() === 'rate_limited') {
-        // backoff e retry...
-    }
+    $e->getBody();        // corpo do erro decodificado (detalhe estruturado)
 }
+```
+
+**Novas tentativas.** A SDK tenta de novo sozinha (até `max_retries`, padrão 2) em erro
+de rede/timeout, `429`, `502`, `503` e `504` — nada mais (um `500` ou `4xx` volta na
+hora). Espera o `Retry-After` quando a API manda (teto 60 s), senão
+`min(8, 0,5 × 2^tentativa)` s + até 25% de jitter.
+
+**Idempotência.** Toda escrita (POST/PUT/PATCH/DELETE) leva uma `Idempotency-Key` gerada
+por chamada e **repetida** nas novas tentativas (junto com o mesmo `X-Request-Id`), então
+um retry nunca duplica um envio: a API devolve a resposta original
+(`Idempotent-Replayed: true`) por 24 h. Para amarrar a chave ao SEU pedido (ex.: sobreviver
+a um restart do seu worker), passe a sua:
+
+```php
+$bz->sendText('+5511999999999', 'Pedido confirmado', ['idempotency_key' => 'pedido-4471']); // send*: no $opts
+$bz->createContact(['phone' => '+5511999998888'], ['idempotency_key' => 'crm-sync-991']);   // métodos com $options
 ```
 
 ## Exemplo rodável

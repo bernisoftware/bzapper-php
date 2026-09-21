@@ -5,9 +5,10 @@ declare(strict_types=1);
 namespace Bzapper;
 
 /**
- * Encanamento HTTP compartilhado por {@see Client} e {@see PartnerClient}:
- * cabeçalhos, cURL, decodificação do JSON e conversão de erros em
- * {@see BzapperException}.
+ * Encanamento HTTP compartilhado por {@see Client} e {@see PartnerClient}
+ * (padrão Berni Software r2): cabeçalhos, cURL, X-Request-Id e Idempotency-Key por
+ * chamada lógica, novas tentativas com Retry-After, decodificação do JSON e conversão
+ * de erros em {@see BzapperException} (e subclasses).
  *
  * @internal Não faz parte da superfície pública do SDK — use as classes de cliente.
  */
@@ -16,169 +17,416 @@ trait HttpTransport
     private string $baseUrl;
     private string $apiKey;
     private ?string $locale;
-    private int $timeout;
+    /** Segundos por tentativa. */
+    private float $timeout;
+    private int $maxRetries = 2;
+    private ?string $projectId = null;
+    /** @var \Closure(float): void */
+    private \Closure $sleep;
+    private ?\CurlHandle $curl = null;
 
     /**
-     * @param array{locale?: string, timeout?: int} $opts
+     * @param array{locale?: string, timeout?: int|float, max_retries?: int, project_id?: string, sleep?: callable(float): void} $opts
      */
     private function initTransport(string $token, ?string $baseUrl, array $opts): void
     {
         $this->baseUrl = rtrim($baseUrl ?? Client::DEFAULT_BASE_URL, '/');
         $this->apiKey = $token;
-        $this->locale = isset($opts['locale']) ? (string) $opts['locale'] : null;
-        $this->timeout = isset($opts['timeout']) ? (int) $opts['timeout'] : 30;
+        $this->locale = isset($opts['locale']) && $opts['locale'] !== '' ? (string) $opts['locale'] : null;
+        $this->timeout = isset($opts['timeout']) ? (float) $opts['timeout'] : 30.0;
+        if ($this->timeout <= 0) {
+            throw new \InvalidArgumentException('timeout precisa ser maior que zero.');
+        }
+        if (isset($opts['max_retries'])) {
+            if (!is_int($opts['max_retries']) || $opts['max_retries'] < 0) {
+                throw new \InvalidArgumentException('max_retries precisa ser um inteiro >= 0.');
+            }
+            $this->maxRetries = $opts['max_retries'];
+        }
+        $this->projectId = isset($opts['project_id']) && $opts['project_id'] !== '' ? (string) $opts['project_id'] : null;
+        if (isset($opts['sleep'])) {
+            if (!is_callable($opts['sleep'])) {
+                throw new \InvalidArgumentException('sleep precisa ser callable(float $segundos).');
+            }
+            $this->sleep = \Closure::fromCallable($opts['sleep']);
+        } else {
+            $this->sleep = static function (float $seconds): void {
+                if ($seconds > 0) {
+                    usleep((int) round($seconds * 1_000_000));
+                }
+            };
+        }
     }
 
+    // ------------------------------------------------------------------
+    // Atalhos usados pelos métodos legados (retornam array; corpo vazio → []).
+    // ------------------------------------------------------------------
+
     /**
-     * @param array<string,scalar> $query
+     * @param array<string,mixed> $query
+     * @param array{idempotency_key?: string, timeout?: int|float} $options
      * @return array<string,mixed>
      */
-    private function get(string $path, array $query = []): array
+    private function get(string $path, array $query = [], array $options = []): array
     {
-        return $this->request('GET', $path, null, $query);
+        return $this->call('GET', $path, $query, null, $options) ?? [];
     }
 
     /**
      * @param array<string,mixed>|null $body
-     * @param array<string,scalar> $query
+     * @param array<string,mixed> $query
+     * @param array{idempotency_key?: string, timeout?: int|float} $options
      * @return array<string,mixed>
      */
-    private function post(string $path, ?array $body = null, array $query = []): array
+    private function post(string $path, ?array $body = null, array $query = [], array $options = []): array
     {
-        return $this->request('POST', $path, $body, $query);
+        return $this->call('POST', $path, $query, $body, $options) ?? [];
     }
 
     /**
      * @param array<string,mixed>|null $body
-     * @param array<string,scalar> $query
+     * @param array<string,mixed> $query
+     * @param array{idempotency_key?: string, timeout?: int|float} $options
      * @return array<string,mixed>
      */
-    private function put(string $path, ?array $body = null, array $query = []): array
+    private function put(string $path, ?array $body = null, array $query = [], array $options = []): array
     {
-        return $this->request('PUT', $path, $body, $query);
+        return $this->call('PUT', $path, $query, $body, $options) ?? [];
     }
 
     /**
      * @param array<string,mixed>|null $body
-     * @param array<string,scalar> $query
+     * @param array<string,mixed> $query
+     * @param array{idempotency_key?: string, timeout?: int|float} $options
      * @return array<string,mixed>
      */
-    private function patch(string $path, ?array $body = null, array $query = []): array
+    private function patch(string $path, ?array $body = null, array $query = [], array $options = []): array
     {
-        return $this->request('PATCH', $path, $body, $query);
+        return $this->call('PATCH', $path, $query, $body, $options) ?? [];
     }
 
     /**
-     * @param array<string,scalar> $query
+     * @param array<string,mixed> $query
+     * @param array{idempotency_key?: string, timeout?: int|float} $options
      * @return array<string,mixed>
      */
-    private function delete(string $path, array $query = []): array
+    private function delete(string $path, array $query = [], array $options = []): array
     {
-        return $this->request('DELETE', $path, null, $query);
+        return $this->call('DELETE', $path, $query, null, $options) ?? [];
     }
 
     /**
-     * Executa uma requisição HTTP e devolve o corpo JSON decodificado.
+     * Codifica UM parâmetro de caminho (percent-encoding por segmento). Vazio, "." ou
+     * ".." → InvalidArgumentException ANTES de qualquer requisição.
+     */
+    private static function seg(string $value, string $name = 'id'): string
+    {
+        if ($value === '' || $value === '.' || $value === '..') {
+            throw new \InvalidArgumentException(sprintf(
+                'Parâmetro de caminho "%s" inválido: %s.',
+                $name,
+                $value === '' ? 'vazio' : '"' . $value . '"'
+            ));
+        }
+        return rawurlencode($value);
+    }
+
+    /**
+     * Executa UMA chamada lógica (com as novas tentativas) e devolve o corpo JSON
+     * decodificado (`null` para corpo vazio/204).
      *
-     * @param array<string,mixed>|null $body
-     * @param array<string,scalar> $query
-     * @param list<string> $extraHeaders Cabeçalhos extras ("Nome: valor"), ex.: Idempotency-Key.
-     * @return array<string,mixed>
+     * @param string $path Caminho já codificado.
+     * @param array<string,mixed> $query Valores `null` são omitidos.
+     * @param array<string,mixed>|null $body `null` = sem corpo.
+     * @param array{idempotency_key?: string, timeout?: int|float} $options
+     * @param array{fields: array<string,scalar>, file: array{name: string, filename: string, content: string, content_type: string}}|null $multipart
+     * @return array<mixed>|null
      *
      * @throws BzapperException Em qualquer resposta não-2xx ou falha de transporte.
+     * @throws \InvalidArgumentException Opção/argumento inválido (antes de qualquer requisição).
      */
-    private function request(string $method, string $path, ?array $body, array $query, array $extraHeaders = []): array
+    private function call(string $method, string $path, array $query = [], ?array $body = null, array $options = [], ?array $multipart = null): ?array
     {
+        self::checkOptions($options);
+
         $url = $this->baseUrl . $path;
-        if ($query !== []) {
-            $url .= '?' . http_build_query($query);
+        $qs = self::buildQuery($query);
+        if ($qs !== '') {
+            $url .= '?' . $qs;
         }
 
+        $payload = null;
+        $contentType = null;
+        if ($multipart !== null) {
+            $boundary = '----bzapper' . bin2hex(random_bytes(12));
+            $payload = self::encodeMultipart($boundary, $multipart);
+            $contentType = 'multipart/form-data; boundary=' . $boundary;
+        } elseif ($body !== null) {
+            $payload = self::encodeJson($body);
+            $contentType = 'application/json';
+        }
+        $timeout = isset($options['timeout']) ? (float) $options['timeout'] : $this->timeout;
+
+        // Gerados UMA vez por chamada lógica e repetidos em toda nova tentativa: é isso
+        // que deixa a API devolver a resposta original (Idempotent-Replayed) em vez de
+        // repetir a escrita.
+        $requestId = bin2hex(random_bytes(16));
         $headers = [
             'Authorization: Bearer ' . $this->apiKey,
-            'Content-Type: application/json',
             'Accept: application/json',
-            'User-Agent: bzapper-php/' . Client::VERSION,
             // Identifica SDK e versão para a API — é por ele que avisamos você
             // quando a versão que roda tem correção que exige atualizar o código.
-            'X-Bzapper-Client: bzapper-php/' . Client::VERSION,
+            'X-Bzapper-Client: ' . Client::CLIENT_ID,
+            'User-Agent: ' . Client::CLIENT_ID,
+            'X-Request-Id: ' . $requestId,
+            'Expect:', // sem "100-continue" em corpos grandes
         ];
-        if ($this->locale !== null && $this->locale !== '') {
+        if (in_array($method, ['POST', 'PUT', 'PATCH', 'DELETE'], true)) {
+            $headers[] = 'Idempotency-Key: ' . ($options['idempotency_key'] ?? self::uuid4());
+        }
+        if ($contentType !== null) {
+            $headers[] = 'Content-Type: ' . $contentType;
+        } elseif ($method !== 'GET' && $method !== 'DELETE') {
+            $headers[] = 'Content-Length: 0';
+        }
+        if ($this->locale !== null) {
             $headers[] = 'Accept-Language: ' . $this->locale;
         }
-        foreach ($extraHeaders as $h) {
-            $headers[] = $h;
+        if ($this->projectId !== null) {
+            $headers[] = 'X-Project-Id: ' . $this->projectId;
         }
 
-        $ch = curl_init();
-        if ($ch === false) {
-            throw new BzapperException('network_error', 'Falha ao inicializar cURL.', 0);
-        }
-
-        curl_setopt($ch, CURLOPT_URL, $url);
-        curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
-        curl_setopt($ch, CURLOPT_TIMEOUT, $this->timeout);
-        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, $this->timeout);
-
-        if ($body !== null) {
-            $json = json_encode($body, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-            if ($json === false) {
-                throw new BzapperException(
-                    'invalid_request',
-                    'Falha ao serializar o corpo da requisição: ' . json_last_error_msg(),
-                    0
-                );
+        for ($attempt = 0; ; $attempt++) {
+            try {
+                [$status, $responseHeaders, $raw] = $this->sendOnce($method, $url, $headers, $payload, $timeout, $requestId);
+            } catch (NetworkException $e) {
+                if ($attempt < $this->maxRetries) {
+                    ($this->sleep)(self::backoff($attempt));
+                    continue;
+                }
+                throw $e;
             }
-            curl_setopt($ch, CURLOPT_POSTFIELDS, $json);
+
+            if ($status >= 200 && $status < 300) {
+                return self::decodeSuccess($status, $responseHeaders, $raw, $requestId);
+            }
+            if (in_array($status, [429, 502, 503, 504], true) && $attempt < $this->maxRetries) {
+                $retryAfter = BzapperException::parseRetryAfter($responseHeaders['retry-after'] ?? null);
+                ($this->sleep)($retryAfter !== null ? min(60.0, $retryAfter) : self::backoff($attempt));
+                continue;
+            }
+
+            throw BzapperException::fromResponse($status, $responseHeaders, $raw, $requestId);
+        }
+    }
+
+    /**
+     * @param list<string> $headers
+     * @return array{0: int, 1: array<string,string>, 2: string}
+     */
+    private function sendOnce(string $method, string $url, array $headers, ?string $payload, float $timeout, string $requestId): array
+    {
+        if ($this->curl === null) {
+            $handle = curl_init();
+            if ($handle === false) {
+                throw new NetworkException('NETWORK_ERROR: não foi possível iniciar o cURL.', $requestId);
+            }
+            $this->curl = $handle;
+        } else {
+            curl_reset($this->curl); // reaproveita a conexão (keep-alive) sem herdar opções
         }
 
-        $raw = curl_exec($ch);
-        if ($raw === false) {
-            $err = curl_error($ch);
-            $errno = curl_errno($ch);
-            curl_close($ch);
-            throw new BzapperException(
-                'network_error',
-                'Falha de transporte: ' . ($err !== '' ? $err : 'erro cURL ' . $errno),
-                0
+        $responseHeaders = [];
+        $opts = [
+            CURLOPT_URL => $url,
+            CURLOPT_CUSTOMREQUEST => $method,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HTTPHEADER => $headers,
+            CURLOPT_FOLLOWLOCATION => false,
+            CURLOPT_NOSIGNAL => true,
+            CURLOPT_TIMEOUT_MS => max(1, (int) round($timeout * 1000)),
+            CURLOPT_CONNECTTIMEOUT_MS => max(1, (int) round($timeout * 1000)),
+            CURLOPT_HEADERFUNCTION => static function ($handle, string $line) use (&$responseHeaders): int {
+                $trimmed = trim($line);
+                if (str_starts_with($trimmed, 'HTTP/')) {
+                    $responseHeaders = []; // nova resposta (ex.: depois de um 100 Continue)
+                } elseif (($pos = strpos($trimmed, ':')) !== false) {
+                    $responseHeaders[strtolower(trim(substr($trimmed, 0, $pos)))] = trim(substr($trimmed, $pos + 1));
+                }
+                return strlen($line);
+            },
+        ];
+        if (defined('CURLOPT_PATH_AS_IS')) {
+            $opts[CURLOPT_PATH_AS_IS] = true; // o caminho vai exatamente como codificado
+        }
+        if ($payload !== null) {
+            $opts[CURLOPT_POSTFIELDS] = $payload;
+        }
+        curl_setopt_array($this->curl, $opts);
+
+        $raw = curl_exec($this->curl);
+        if (!is_string($raw)) {
+            $errno = curl_errno($this->curl);
+            $error = curl_error($this->curl);
+            throw new NetworkException(sprintf(
+                'NETWORK_ERROR: %s %s falhou (cURL %d: %s) [request_id=%s]',
+                $method,
+                strtok($url, '?'),
+                $errno,
+                $error !== '' ? $error : 'erro desconhecido',
+                $requestId
+            ), $requestId);
+        }
+
+        return [(int) curl_getinfo($this->curl, CURLINFO_RESPONSE_CODE), $responseHeaders, $raw];
+    }
+
+    /**
+     * 2xx: corpo vazio → null; JSON → decodificado; qualquer outra coisa (HTML de proxy,
+     * texto) → INVALID_RESPONSE — nunca um retorno vazio calado.
+     *
+     * @param array<string,string> $headers
+     * @return array<mixed>|null
+     */
+    private static function decodeSuccess(int $status, array $headers, string $raw, string $sentRequestId): ?array
+    {
+        if (trim($raw) === '') {
+            return null;
+        }
+        try {
+            $decoded = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
+        } catch (\JsonException $e) {
+            $decoded = $e;
+        }
+        if ($decoded === null || is_array($decoded)) {
+            return $decoded;
+        }
+        $requestId = ($headers['x-request-id'] ?? '') !== '' ? $headers['x-request-id'] : $sentRequestId;
+        throw new BzapperException(
+            'INVALID_RESPONSE',
+            sprintf('INVALID_RESPONSE (HTTP %d): resposta de sucesso não é JSON [request_id=%s]', $status, $requestId),
+            $status,
+            null,
+            $raw,
+            $decoded instanceof \Throwable ? $decoded : null,
+            $requestId
+        );
+    }
+
+    /**
+     * Query string: `null` omitido; booleanos `true`/`false`; datas em ISO 8601 UTC com
+     * `Z`; listas como CSV (`style: form, explode: false`).
+     *
+     * @param array<string,mixed> $query
+     */
+    private static function buildQuery(array $query): string
+    {
+        $pairs = [];
+        foreach ($query as $name => $value) {
+            if ($value === null) {
+                continue;
+            }
+            if (is_array($value)) {
+                $value = implode(',', array_map(static fn ($v): string => self::queryValue((string) $name, $v), $value));
+            } else {
+                $value = self::queryValue((string) $name, $value);
+            }
+            $pairs[] = rawurlencode((string) $name) . '=' . rawurlencode($value);
+        }
+        return implode('&', $pairs);
+    }
+
+    private static function queryValue(string $name, mixed $value): string
+    {
+        if (is_bool($value)) {
+            return $value ? 'true' : 'false';
+        }
+        if ($value instanceof \DateTimeInterface) {
+            $utc = \DateTimeImmutable::createFromInterface($value)->setTimezone(new \DateTimeZone('UTC'));
+            return $utc->format($utc->format('u') === '000000' ? 'Y-m-d\TH:i:s\Z' : 'Y-m-d\TH:i:s.u\Z');
+        }
+        if (is_string($value) || is_int($value) || is_float($value) || $value instanceof \Stringable) {
+            return (string) $value;
+        }
+        throw new \InvalidArgumentException(sprintf(
+            'Parâmetro "%s": tipo %s não suportado na query.',
+            $name,
+            get_debug_type($value)
+        ));
+    }
+
+    /** @param array<mixed> $body */
+    private static function encodeJson(array $body): string
+    {
+        try {
+            // Corpo vazio vira `{}`, nunca `[]`.
+            return json_encode(
+                $body === [] ? new \stdClass() : $body,
+                JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR
             );
+        } catch (\JsonException $e) {
+            throw new \InvalidArgumentException('Corpo não serializável em JSON: ' . $e->getMessage(), 0, $e);
         }
+    }
 
-        $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-        curl_close($ch);
-
-        /** @var string $raw */
-        $rawBody = $raw;
-
-        // Corpos vazios (ex.: 204) → array vazio.
-        $decoded = [];
-        if ($rawBody !== '') {
-            $parsed = json_decode($rawBody, true);
-            if (is_array($parsed)) {
-                $decoded = $parsed;
-            } elseif (json_last_error() !== JSON_ERROR_NONE && $status >= 200 && $status < 300) {
-                throw new BzapperException(
-                    'invalid_response',
-                    'Resposta não-JSON da API: ' . json_last_error_msg(),
-                    $status,
-                    null,
-                    $rawBody
-                );
+    /**
+     * @param array{fields: array<string,scalar>, file: array{name: string, filename: string, content: string, content_type: string}} $mp
+     */
+    private static function encodeMultipart(string $boundary, array $mp): string
+    {
+        $out = '';
+        foreach ($mp['fields'] as $name => $value) {
+            if (is_bool($value)) {
+                $value = $value ? 'true' : 'false';
             }
+            $out .= '--' . $boundary . "\r\n"
+                . 'Content-Disposition: form-data; name="' . self::quoteMime((string) $name) . "\"\r\n\r\n"
+                . (string) $value . "\r\n";
         }
+        $f = $mp['file'];
+        $out .= '--' . $boundary . "\r\n"
+            . 'Content-Disposition: form-data; name="' . self::quoteMime($f['name']) . '"; filename="' . self::quoteMime($f['filename']) . "\"\r\n"
+            . 'Content-Type: ' . $f['content_type'] . "\r\n\r\n"
+            . $f['content'] . "\r\n";
+        return $out . '--' . $boundary . "--\r\n";
+    }
 
-        if ($status < 200 || $status >= 300) {
-            $code = is_string($decoded['code'] ?? null) ? $decoded['code'] : 'http_error';
-            $message = is_string($decoded['message'] ?? null)
-                ? $decoded['message']
-                : ('Requisição falhou com status HTTP ' . $status . '.');
-            $locale = is_string($decoded['locale'] ?? null) ? $decoded['locale'] : null;
-            throw new BzapperException($code, $message, $status, $locale, $rawBody);
+    private static function quoteMime(string $s): string
+    {
+        return str_replace(['\\', '"', "\r", "\n"], ['\\\\', '\\"', '', ''], $s);
+    }
+
+    /** @param array<array-key,mixed> $options */
+    private static function checkOptions(array $options): void
+    {
+        $unknown = array_diff(array_keys($options), ['idempotency_key', 'timeout']);
+        if ($unknown !== []) {
+            throw new \InvalidArgumentException(sprintf(
+                'Opção de requisição desconhecida: %s. Aceitas: idempotency_key, timeout.',
+                implode(', ', $unknown)
+            ));
         }
+        if (isset($options['idempotency_key']) && (!is_string($options['idempotency_key']) || $options['idempotency_key'] === '')) {
+            throw new \InvalidArgumentException('idempotency_key precisa ser uma string não vazia.');
+        }
+        if (isset($options['timeout']) && ((!is_int($options['timeout']) && !is_float($options['timeout'])) || $options['timeout'] <= 0)) {
+            throw new \InvalidArgumentException('timeout precisa ser um número de segundos maior que zero.');
+        }
+    }
 
-        /** @var array<string,mixed> $decoded */
-        return $decoded;
+    /** Espera sem Retry-After: `min(8, 0.5 × 2^tentativa)` s + jitter de até 25%. */
+    private static function backoff(int $attempt): float
+    {
+        $base = min(8.0, 0.5 * (2 ** $attempt));
+        return $base * (1 + (random_int(0, 1_000_000) / 1_000_000) * 0.25);
+    }
+
+    /** UUID v4 aleatório (com hífens). */
+    private static function uuid4(): string
+    {
+        $b = random_bytes(16);
+        $b[6] = chr((ord($b[6]) & 0x0F) | 0x40);
+        $b[8] = chr((ord($b[8]) & 0x3F) | 0x80);
+        return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($b), 4));
     }
 }
