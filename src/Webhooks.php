@@ -60,9 +60,35 @@ final class Webhooks
         'message.received', 'message.sent', 'message.delivered', 'message.read', 'message.failed',
         'instance.connected', 'instance.disconnected', 'instance.banned', 'instance.logged_out',
         'instance.warming', 'instance.status',
-        'group.joined', 'group.participant_added', 'group.participant_removed',
+        'group.joined', 'group.left', 'group.participant_added', 'group.participant_removed',
         'group.participant_promoted', 'group.participant_demoted',
         'group.subject_changed', 'group.description_changed',
+    ];
+
+    /** bZapper Connect: o cliente concluiu (Pro pago + WhatsApp conectado). */
+    public const EVENT_CONNECT_COMPLETED = 'connect.completed';
+
+    /** bZapper Connect: Pro do cliente sem pagamento — a key responde 402 `connect_suspended`. */
+    public const EVENT_CONNECT_SUSPENDED = 'connect.suspended';
+
+    /** bZapper Connect: pagamento regularizado — a key volta a funcionar. */
+    public const EVENT_CONNECT_RESUMED = 'connect.resumed';
+
+    /** bZapper Connect: conexão encerrada — a key responde 401 `connect_revoked`. */
+    public const EVENT_CONNECT_REVOKED = 'connect.revoked';
+
+    /**
+     * Eventos de ciclo de vida do bZapper Connect, entregues só no webhook do
+     * PARCEIRO (assinado com o secret de webhook do parceiro, mesmo esquema HMAC).
+     * Esse webhook também recebe os eventos de EVENT_TYPES dos projetos com conexão
+     * ativa; em todos, o envelope traz `connection`
+     * {id, external_id, account_id, project_id, status}.
+     *
+     * @var list<string>
+     */
+    public const CONNECT_EVENT_TYPES = [
+        self::EVENT_CONNECT_COMPLETED, self::EVENT_CONNECT_SUSPENDED,
+        self::EVENT_CONNECT_RESUMED, self::EVENT_CONNECT_REVOKED,
     ];
 
     private string $secret;
@@ -198,6 +224,8 @@ final class Webhooks
         $d['sender'] = isset($d['sender']) && is_array($d['sender']) ? $d['sender'] : null;
         $d['mentions'] = isset($d['mentions']) && is_array($d['mentions']) ? array_values($d['mentions']) : [];
         $d['payload'] = isset($d['payload']) && is_array($d['payload']) ? $d['payload'] : [];
+        // Só nas entregas do webhook de parceiro (bZapper Connect); null nos demais.
+        $d['connection'] = isset($d['connection']) && is_array($d['connection']) ? $d['connection'] : null;
         return $d;
     }
 }

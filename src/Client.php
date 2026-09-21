@@ -19,20 +19,27 @@ namespace Bzapper;
  *     instance_id?: string,
  *     pool_id?: string,
  *     quoted_message_id?: string,
+ *     quoted_participant?: string,
  *     client_reference?: string,
  *     mentions?: list<string>,
- *     sticky?: bool
+ *     sticky?: bool,
+ *     scheduled_at?: string,
+ *     idempotency_key?: string
  * }
+ *
+ * `quoted_participant`: autor (telefone ou JID) da mensagem citada/reagida — só
+ * é preciso em grupo quando ela não está no histórico do bZapper.
+ * `mentions`: JIDs ou telefones ("5511…", "+55 11 9…").
+ * `idempotency_key`: vai no header `Idempotency-Key` (até 255 caracteres), NUNCA
+ * no corpo. Repetir o envio com a mesma chave em 24h devolve a MESMA resposta
+ * sem reenviar (409 idempotency_in_progress / 422 idempotency_key_reused).
  */
 final class Client
 {
-    private string $baseUrl;
-    private string $apiKey;
-    private ?string $locale;
-    private int $timeout;
+    use HttpTransport;
 
     /** Versão do SDK (usada no User-Agent). */
-    public const VERSION = '0.6.1';
+    public const VERSION = '0.6.2';
 
     /** URL base padrão da API (produção). Sobrescreva só em dev/self-host. */
     public const DEFAULT_BASE_URL = 'https://api.bzapper.com.br';
@@ -56,10 +63,7 @@ final class Client
         if ($apiKey === '') {
             throw new \InvalidArgumentException('apiKey não pode ser vazio.');
         }
-        $this->baseUrl = rtrim($baseUrl ?? self::DEFAULT_BASE_URL, '/');
-        $this->apiKey = $apiKey;
-        $this->locale = isset($opts['locale']) ? (string) $opts['locale'] : null;
-        $this->timeout = isset($opts['timeout']) ? (int) $opts['timeout'] : 30;
+        $this->initTransport($apiKey, $baseUrl, $opts);
     }
 
     // ---------------------------------------------------------------------
@@ -74,7 +78,7 @@ final class Client
      */
     public function sendText(string $to, string $body, array $opts = []): array
     {
-        return $this->post('/messages/text', $this->base($to, $opts) + ['body' => $body]);
+        return $this->send('/messages/text', $this->base($to, $opts) + ['body' => $body], $opts);
     }
 
     /**
@@ -94,7 +98,7 @@ final class Client
         if (isset($opts['expiry_minutes'])) {
             $payload['expiry_minutes'] = $opts['expiry_minutes'];
         }
-        return $this->post('/messages/otp', $payload);
+        return $this->send('/messages/otp', $payload, $opts);
     }
 
     /**
@@ -106,7 +110,7 @@ final class Client
      */
     public function sendImage(string $to, array $media, array $opts = []): array
     {
-        return $this->post('/messages/image', $this->base($to, $opts) + ['media' => $media]);
+        return $this->send('/messages/image', $this->base($to, $opts) + ['media' => $media], $opts);
     }
 
     /**
@@ -118,7 +122,7 @@ final class Client
      */
     public function sendVideo(string $to, array $media, array $opts = []): array
     {
-        return $this->post('/messages/video', $this->base($to, $opts) + ['media' => $media]);
+        return $this->send('/messages/video', $this->base($to, $opts) + ['media' => $media], $opts);
     }
 
     /**
@@ -130,7 +134,7 @@ final class Client
      */
     public function sendDocument(string $to, array $media, array $opts = []): array
     {
-        return $this->post('/messages/document', $this->base($to, $opts) + ['media' => $media]);
+        return $this->send('/messages/document', $this->base($to, $opts) + ['media' => $media], $opts);
     }
 
     /**
@@ -142,7 +146,7 @@ final class Client
      */
     public function sendAudio(string $to, array $media, array $opts = []): array
     {
-        return $this->post('/messages/audio', $this->base($to, $opts) + ['media' => $media]);
+        return $this->send('/messages/audio', $this->base($to, $opts) + ['media' => $media], $opts);
     }
 
     /**
@@ -154,7 +158,7 @@ final class Client
      */
     public function sendSticker(string $to, array $media, array $opts = []): array
     {
-        return $this->post('/messages/sticker', $this->base($to, $opts) + ['media' => $media]);
+        return $this->send('/messages/sticker', $this->base($to, $opts) + ['media' => $media], $opts);
     }
 
     /**
@@ -171,7 +175,7 @@ final class Client
                 $payload[$k] = $opts[$k];
             }
         }
-        return $this->post('/messages/location', $payload);
+        return $this->send('/messages/location', $payload, $opts);
     }
 
     /**
@@ -188,7 +192,7 @@ final class Client
                 $payload[$k] = $opts[$k];
             }
         }
-        return $this->post('/messages/contact', $payload);
+        return $this->send('/messages/contact', $payload, $opts);
     }
 
     /**
@@ -205,7 +209,7 @@ final class Client
             'options' => array_values($options),
             'selectable_count' => $selectableCount,
         ];
-        return $this->post('/messages/poll', $payload);
+        return $this->send('/messages/poll', $payload, $opts);
     }
 
     /**
@@ -220,7 +224,7 @@ final class Client
             'quoted_message_id' => $quotedMessageId,
             'emoji' => $emoji,
         ];
-        return $this->post('/messages/reaction', $payload);
+        return $this->send('/messages/reaction', $payload, $opts);
     }
 
     /**
@@ -239,7 +243,7 @@ final class Client
         if (isset($opts['footer'])) {
             $payload['footer'] = $opts['footer'];
         }
-        return $this->post('/messages/buttons', $payload);
+        return $this->send('/messages/buttons', $payload, $opts);
     }
 
     /**
@@ -259,7 +263,7 @@ final class Client
                 $payload[$k] = $opts[$k];
             }
         }
-        return $this->post('/messages/list', $payload);
+        return $this->send('/messages/list', $payload, $opts);
     }
 
     // ---------------------------------------------------------------------
@@ -742,6 +746,18 @@ final class Client
     }
 
     /**
+     * Mostra o grupo de um convite (nome, descrição, tamanho) SEM entrar — para
+     * confirmar antes de colocar o número num grupo de terceiros.
+     * POST /groups/join/preview?instance_id= body { code }
+     *
+     * @return array<string,mixed>
+     */
+    public function previewGroupInvite(string $instanceId, string $code): array
+    {
+        return $this->post('/groups/join/preview', ['code' => $code], ['instance_id' => $instanceId]);
+    }
+
+    /**
      * Entra num grupo por código de convite. POST /groups/join?instance_id= body { code }
      *
      * @return array<string,mixed>
@@ -994,6 +1010,31 @@ final class Client
      *
      * @return array<string,mixed> { data: list<array<string,mixed>> }
      */
+    /**
+     * Lista os avisos de AÇÃO NECESSÁRIA na sua integração. GET /advisories
+     *
+     * Um aviso significa que uma mudança nossa exige atualizar o SEU código (SDK
+     * a atualizar, payload ou endpoint que mudou). Nunca é changelog: você só
+     * recebe o que afeta a sua conta, cruzado com a versão de SDK que roda e os
+     * recursos que de fato usa. O campo `action` diz o que fazer.
+     *
+     * @return array<string,mixed>
+     */
+    public function listAdvisories(): array
+    {
+        return $this->get('/advisories');
+    }
+
+    /**
+     * Marca um aviso como tratado. POST /advisories/{id}/read
+     *
+     * @return array<string,mixed>
+     */
+    public function markAdvisoryRead(string $advisoryId): array
+    {
+        return $this->post('/advisories/' . rawurlencode($advisoryId) . '/read');
+    }
+
     public function listWebhooks(): array
     {
         return $this->get('/webhooks');
@@ -1094,8 +1135,51 @@ final class Client
     }
 
     // ---------------------------------------------------------------------
+    // Apps conectados (bZapper Connect — softwares parceiros usando esta conta)
+    // ---------------------------------------------------------------------
+
+    /**
+     * Lista os apps parceiros conectados a esta conta (com nome/logo do parceiro).
+     * GET /me/connections
+     *
+     * @return array<string,mixed> { data: list<array<string,mixed>> } — cada item é
+     *                             uma PartnerConnection com partner_name/partner_logo_url.
+     */
+    public function listConnectedApps(): array
+    {
+        return $this->get('/me/connections');
+    }
+
+    /**
+     * Desconecta um app parceiro (admin). A key do parceiro para de funcionar na
+     * hora. Não cancela o plano da conta. DELETE /me/connections/{id}
+     *
+     * @return array<string,mixed> Vazio (a API responde 204).
+     */
+    public function revokeConnectedApp(string $id): array
+    {
+        return $this->delete('/me/connections/' . rawurlencode($id));
+    }
+
+    // ---------------------------------------------------------------------
     // Internos
     // ---------------------------------------------------------------------
+
+    /**
+     * POST de envio: `$opts['idempotency_key']` vira o header `Idempotency-Key`.
+     *
+     * @param array<string,mixed> $payload
+     * @param array<string,mixed> $opts
+     * @return array<string,mixed>
+     */
+    private function send(string $path, array $payload, array $opts): array
+    {
+        $headers = [];
+        if (isset($opts['idempotency_key']) && $opts['idempotency_key'] !== '') {
+            $headers[] = 'Idempotency-Key: ' . $opts['idempotency_key'];
+        }
+        return $this->request('POST', $path, $payload, [], $headers);
+    }
 
     /**
      * Monta o corpo base comum a todos os envios (SendBase).
@@ -1106,7 +1190,7 @@ final class Client
     private function base(string $to, array $opts): array
     {
         $payload = ['to' => $to];
-        foreach (['instance_id', 'pool_id', 'quoted_message_id', 'client_reference', 'scheduled_at'] as $k) {
+        foreach (['instance_id', 'pool_id', 'quoted_message_id', 'quoted_participant', 'client_reference', 'scheduled_at'] as $k) {
             if (isset($opts[$k])) {
                 $payload[$k] = $opts[$k];
             }
@@ -1120,151 +1204,5 @@ final class Client
             $payload['sticky'] = (bool) $opts['sticky'];
         }
         return $payload;
-    }
-
-    /**
-     * @param array<string,scalar> $query
-     * @return array<string,mixed>
-     */
-    private function get(string $path, array $query = []): array
-    {
-        return $this->request('GET', $path, null, $query);
-    }
-
-    /**
-     * @param array<string,mixed>|null $body
-     * @param array<string,scalar> $query
-     * @return array<string,mixed>
-     */
-    private function post(string $path, ?array $body = null, array $query = []): array
-    {
-        return $this->request('POST', $path, $body, $query);
-    }
-
-    /**
-     * @param array<string,mixed>|null $body
-     * @param array<string,scalar> $query
-     * @return array<string,mixed>
-     */
-    private function put(string $path, ?array $body = null, array $query = []): array
-    {
-        return $this->request('PUT', $path, $body, $query);
-    }
-
-    /**
-     * @param array<string,mixed>|null $body
-     * @param array<string,scalar> $query
-     * @return array<string,mixed>
-     */
-    private function patch(string $path, ?array $body = null, array $query = []): array
-    {
-        return $this->request('PATCH', $path, $body, $query);
-    }
-
-    /**
-     * @param array<string,scalar> $query
-     * @return array<string,mixed>
-     */
-    private function delete(string $path, array $query = []): array
-    {
-        return $this->request('DELETE', $path, null, $query);
-    }
-
-    /**
-     * Executa uma requisição HTTP e devolve o corpo JSON decodificado.
-     *
-     * @param array<string,mixed>|null $body
-     * @param array<string,scalar> $query
-     * @return array<string,mixed>
-     *
-     * @throws BzapperException Em qualquer resposta não-2xx ou falha de transporte.
-     */
-    private function request(string $method, string $path, ?array $body, array $query): array
-    {
-        $url = $this->baseUrl . $path;
-        if ($query !== []) {
-            $url .= '?' . http_build_query($query);
-        }
-
-        $headers = [
-            'Authorization: Bearer ' . $this->apiKey,
-            'Content-Type: application/json',
-            'Accept: application/json',
-            'User-Agent: bzapper-php/' . self::VERSION,
-        ];
-        if ($this->locale !== null && $this->locale !== '') {
-            $headers[] = 'Accept-Language: ' . $this->locale;
-        }
-
-        $ch = curl_init();
-        if ($ch === false) {
-            throw new BzapperException('network_error', 'Falha ao inicializar cURL.', 0);
-        }
-
-        curl_setopt($ch, CURLOPT_URL, $url);
-        curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
-        curl_setopt($ch, CURLOPT_TIMEOUT, $this->timeout);
-        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, $this->timeout);
-
-        if ($body !== null) {
-            $json = json_encode($body, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-            if ($json === false) {
-                throw new BzapperException(
-                    'invalid_request',
-                    'Falha ao serializar o corpo da requisição: ' . json_last_error_msg(),
-                    0
-                );
-            }
-            curl_setopt($ch, CURLOPT_POSTFIELDS, $json);
-        }
-
-        $raw = curl_exec($ch);
-        if ($raw === false) {
-            $err = curl_error($ch);
-            $errno = curl_errno($ch);
-            curl_close($ch);
-            throw new BzapperException(
-                'network_error',
-                'Falha de transporte: ' . ($err !== '' ? $err : 'erro cURL ' . $errno),
-                0
-            );
-        }
-
-        $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-        curl_close($ch);
-
-        /** @var string $raw */
-        $rawBody = $raw;
-
-        // Corpos vazios (ex.: 204) → array vazio.
-        $decoded = [];
-        if ($rawBody !== '') {
-            $parsed = json_decode($rawBody, true);
-            if (is_array($parsed)) {
-                $decoded = $parsed;
-            } elseif (json_last_error() !== JSON_ERROR_NONE && $status >= 200 && $status < 300) {
-                throw new BzapperException(
-                    'invalid_response',
-                    'Resposta não-JSON da API: ' . json_last_error_msg(),
-                    $status,
-                    null,
-                    $rawBody
-                );
-            }
-        }
-
-        if ($status < 200 || $status >= 300) {
-            $code = is_string($decoded['code'] ?? null) ? $decoded['code'] : 'http_error';
-            $message = is_string($decoded['message'] ?? null)
-                ? $decoded['message']
-                : ('Requisição falhou com status HTTP ' . $status . '.');
-            $locale = is_string($decoded['locale'] ?? null) ? $decoded['locale'] : null;
-            throw new BzapperException($code, $message, $status, $locale, $rawBody);
-        }
-
-        /** @var array<string,mixed> $decoded */
-        return $decoded;
     }
 }
