@@ -168,6 +168,7 @@ final class ConformanceTest extends TestCase
             // --- contatos (CRM)
             'contactsCheck' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b) => $c->contactsCheck($b['instance_id'], $b['phones']),
             'listContacts' => fn (Client $c, PartnerClient $pc, array $p, array $q) => $c->listContacts($q),
+            'importContacts' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->importContacts($b['contacts'], $b['dry_run'] ?? null, $o),
             'createContact' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->createContact($b, $o),
             'getContact' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->getContact($p['id'], $o),
             'updateContact' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->updateContact($p['id'], $b, $o),
@@ -214,6 +215,7 @@ final class ConformanceTest extends TestCase
             'listMyKeys' => fn (Client $c) => $c->listKeys(),
             'createMyKey' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b) => $c->createKey($b['name'], $b['role']),
             'revokeMyKey' => fn (Client $c, PartnerClient $pc, array $p) => $c->revokeKey($p['id']),
+            'rotateMyKey' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->rotateKey($p['id'], $b['revoke_in_seconds'] ?? null, $o),
             'getBrand' => fn (Client $c) => $c->getBrand(),
             'setBrand' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b) => $c->setBrand($b),
             'applyBrand' => fn (Client $c) => $c->applyBrand(),
@@ -283,7 +285,7 @@ final class ConformanceTest extends TestCase
         $table = self::operations();
         $missing = array_values(array_diff($data['ops'], array_keys($table)));
         $this->assertSame([], $missing, 'ops de cases.json sem método na SDK PHP: registre em ConformanceTest::operations()');
-        $this->assertCount(159, $data['ops']);
+        $this->assertCount(161, $data['ops']);
         $this->assertSame([], array_values(array_diff(self::LEGACY_ARRAY_OPS, array_keys($table))));
         // excluídas não podem ter método "por engano" na tabela
         $this->assertSame([], array_values(array_intersect($data['sdk_excluded_ops'], array_keys($table))));

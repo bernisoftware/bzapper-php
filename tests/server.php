@@ -7,7 +7,8 @@
  * registra cada requisição recebida CRUA em `$BZAPPER_MOCK_DIR/requests.jsonl` e responde com a
  * resposta de mesmo índice. Quem confere o que chegou é o teste (MockServer::received()).
  *
- * Resposta: `body` string = `text/plain`; `null` = sem corpo; qualquer outra coisa = JSON.
+ * Resposta: `body` string = `text/plain` (ou o `content_type` do roteiro, quando informado);
+ * `null` = sem corpo; qualquer outra coisa = JSON.
  */
 
 declare(strict_types=1);
@@ -50,7 +51,8 @@ $body = $response->body ?? null;
 if ($body === null) {
     header_remove('Content-Type');
 } elseif (is_string($body)) {
-    header('Content-Type: text/plain; charset=utf-8');
+    $type = $response->content_type ?? null;
+    header('Content-Type: ' . (is_string($type) ? $type : 'text/plain; charset=utf-8'));
     echo $body;
 } else {
     header('Content-Type: application/json');

@@ -11,10 +11,10 @@ uma API HTTP REST.
 ## Instalação
 
 ```bash
-composer require bzapper/bzapper:0.7.1
+composer require bzapper/bzapper:0.8.0
 ```
 
-**Fixe a versão exata** (`"bzapper/bzapper": "0.7.1"` no `composer.json`, sem `^`): cada
+**Fixe a versão exata** (`"bzapper/bzapper": "0.8.0"` no `composer.json`, sem `^`): cada
 release declara na nota se muda a superfície pública (aditiva × quebra) — você atualiza
 quando decidir.
 
@@ -277,6 +277,63 @@ $bz->createSuppression(['phone' => '+5511999998888', 'reason' => 'pediu para sai
 $bz->deleteSuppression('+5511999998888');
 ```
 
+### Importar em lote (`importContacts`)
+
+Upsert por telefone, até **1000 linhas** por chamada. Contato novo entra, contato que já existe
+é atualizado (campo ausente não apaga nada) e as tags/grupos informados são aplicados. Uma linha
+ruim **não** derruba o lote: ela volta em `errors` (`phone_required`, `invalid_phone`,
+`invalid_email`, `write_failed`, `taxonomy_failed`) ou em `skipped_rows` (`duplicate_phone`,
+`suppressed`, `opted_out`, `blocked`, `unreachable`, `deleted`), sempre com o `index` da linha
+que você mandou.
+
+```php
+$linhas = [
+    ['phone' => '+5511999990000', 'name' => 'Ana', 'email' => 'ana@exemplo.com', 'tags' => ['vip']],
+    ['phone' => '+5511888880000', 'document' => '12345678901', 'document_type' => 'cpf',
+     'address' => ['city' => 'São Paulo', 'state' => 'SP', 'zip' => '01310-100'],
+     'groups' => ['clientes-sp']],
+];
+
+$previa = $bz->importContacts($linhas, true); // dry_run: valida e relata SEM gravar
+echo $previa['total'], ' linhas, ', $previa['created'], ' entrariam como novas', "\n";
+
+$r = $bz->importContacts($linhas); // valendo
+printf("criados %d, atualizados %d, pulados %d, falharam %d\n", $r['created'], $r['updated'], $r['skipped'], $r['failed']);
+foreach ($r['errors'] as $e) {
+    echo 'linha ', $e['index'], ' (', $e['phone'] ?? '?', '): ', $e['reason'], "\n";
+}
+```
+
+Mais de 1000 linhas = `422 import_too_large`: fatie o arquivo e chame em partes (cada chamada já
+vai com `Idempotency-Key`, então reenviar um pedaço que deu timeout não duplica ninguém).
+
+### Exportar em CSV (`exportContacts`)
+
+Aceita **os mesmos filtros** de `listContacts` (sem `offset` — a exportação não pagina; use
+`limit`, teto de 100000 linhas) e devolve o **CSV cru em `string`**, não um array: é a única
+rota da SDK que não responde JSON. Salve, faça streaming ou percorra linha a linha.
+
+```php
+$csv = $bz->exportContacts([
+    'tags' => ['vip'], 'tags_match' => 'all', 'status' => 'active',
+    'created_after' => new DateTimeImmutable('-90 days'),
+], ['timeout' => 120]); // base grande pede timeout maior
+
+file_put_contents('contatos.csv', $csv);
+
+// ou consumir direto (a primeira linha é o cabeçalho)
+$linhas = explode("\r\n", trim($csv));
+$colunas = str_getcsv(array_shift($linhas));
+foreach ($linhas as $linha) {
+    $contato = array_combine($colunas, str_getcsv($linha)); // vírgulas e aspas já vêm escapadas
+    echo $contato['phone'], ' ', $contato['name'], "\n";
+}
+```
+
+A SDK não toca no conteúdo (nem aspas, nem BOM, nem quebras de linha) e ignora o
+`Content-Disposition: attachment` da resposta — o nome do arquivo é você que decide. Erro
+continua sendo JSON e continua virando exceção (`AuthenticationException` e companhia).
+
 ## Campanhas
 
 ```php
@@ -373,6 +430,25 @@ echo $created['api_key']; // chave CRUA — mostrada UMA única vez, guarde já
 
 $bz->revokeKey('uuid');
 ```
+
+### Rotacionar sem downtime (`rotateKey`)
+
+`rotateKey()` cria a substituta e **agenda** o fim da antiga: durante a janela de carência as
+duas funcionam, então dá para trocar a chave em produção sem uma janela de erro. A key
+rotacionada passa a expor `expires_at` (quando a antiga para de funcionar) e `rotated_to` (id da
+substituta) — também visíveis em `listKeys()`.
+
+```php
+$r = $bz->rotateKey('uuid');            // carência padrão da API: 24 h
+$r = $bz->rotateKey('uuid', 3600);      // 1 h (máximo 2592000 = 30 dias)
+$r = $bz->rotateKey('uuid', 0);         // revoga a antiga NA HORA
+
+echo $r['api_key'];                     // chave CRUA nova — mostrada UMA única vez
+echo $r['old_key_expires_at'] ?? 'revogada agora';
+```
+
+Erros: `403 admin_required` (só role admin rotaciona), `404 not_found`,
+`409 key_already_revoked` / `409 key_already_expired`.
 
 ## Webhooks
 
@@ -667,7 +743,7 @@ try {
 } catch (RateLimitException $e) {
     sleep($e->getRetryAfter() ?? 1);
 } catch (BzapperException $e) {
-    $e->getErrorCode();   // ex.: "instance_not_connected", "unauthorized" (use ESTE)
+    $e->getErrorCode();   // ex.: "not_connected", "unauthorized" (use ESTE)
     $e->getStatusCode();  // ex.: 409, 401 (0 em erro de rede)
     $e->getRequestId();   // X-Request-Id — informe ao suporte
     $e->getMessage();     // texto traduzido (só para humanos)

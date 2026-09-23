@@ -55,6 +55,16 @@ namespace Bzapper;
  *     created_before?: string|\DateTimeInterface, sort?: string, limit?: int, offset?: int
  * }
  *
+ * @phpstan-type ExportContactsParams array{
+ *     search?: string, tags?: list<string>|string, tags_match?: 'any'|'all',
+ *     groups?: list<string>|string, project_id?: string, instance_id?: string,
+ *     status?: 'active'|'pending_validation'|'opted_out'|'blocked'|'unreachable',
+ *     city?: string, state?: string, country?: string, zip?: string, document?: string,
+ *     has_email?: bool, last_activity_after?: string|\DateTimeInterface,
+ *     last_activity_before?: string|\DateTimeInterface, created_after?: string|\DateTimeInterface,
+ *     created_before?: string|\DateTimeInterface, sort?: string, limit?: int
+ * }
+ *
  * @phpstan-type ContactAddress array{
  *     street?: string|null, number?: string|null, complement?: string|null, district?: string|null,
  *     city?: string|null, state?: string|null, zip?: string|null, country?: string|null
@@ -62,6 +72,11 @@ namespace Bzapper;
  * @phpstan-type ContactInput array{
  *     phone?: string, name?: string|null, email?: string|null, document?: string|null,
  *     document_type?: string|null, address?: ContactAddress|null
+ * }
+ * @phpstan-type ContactImportRow array{
+ *     phone: string, name?: string, email?: string, document?: string,
+ *     document_type?: string, address?: ContactAddress, tags?: list<string>,
+ *     groups?: list<string>
  * }
  * @phpstan-type BrandProfile array{
  *     about?: string, display_name?: string, logo_url?: string, website?: string,
@@ -73,7 +88,7 @@ final class Client
     use HttpTransport;
 
     /** Versão do SDK (usada no User-Agent). */
-    public const VERSION = '0.7.1';
+    public const VERSION = '0.8.0';
 
     /** Valor de `X-Bzapper-Client` / `User-Agent` enviado em toda requisição. */
     public const CLIENT_ID = 'bzapper-php/' . self::VERSION;
@@ -634,6 +649,33 @@ final class Client
         return $this->delete('/keys/' . self::seg($id));
     }
 
+    /**
+     * Rotaciona uma API key: cria a substituta (chave crua devolvida UMA vez) e agenda o
+     * fim da antiga — as duas funcionam durante a janela, então dá para trocar a chave
+     * em produção sem downtime. POST /keys/{id}/rotate
+     *
+     * @param string   $id               Id da key a rotacionar (a que está em uso).
+     * @param int|null $revokeInSeconds  Janela de carência da key ANTIGA em segundos.
+     *                                   Omitido = o padrão da API (86400 = 24 h); `0` revoga
+     *                                   na hora; máximo 2592000 (30 dias).
+     * @param array{idempotency_key?: string, timeout?: int|float} $options
+     * @return array<string,mixed>|null { api_key (chave crua NOVA, só agora),
+     *                                   key, previous_key?, old_key_expires_at? }.
+     *                                   A key rotacionada ganha `expires_at` (quando a
+     *                                   antiga para de funcionar) e `rotated_to` (id da
+     *                                   substituta) — campos novos de ApiKey, também
+     *                                   visíveis em {@see self::listKeys()}.
+     *
+     * @throws BzapperException 403 admin_required, 404 not_found,
+     *                          409 key_already_revoked / key_already_expired.
+     */
+    public function rotateKey(string $id, ?int $revokeInSeconds = null, array $options = []): ?array
+    {
+        $body = $revokeInSeconds === null ? null : ['revoke_in_seconds' => $revokeInSeconds];
+
+        return $this->call('POST', '/keys/' . self::seg($id) . '/rotate', [], $body, $options);
+    }
+
     // ---------------------------------------------------------------------
     // Uso
     // ---------------------------------------------------------------------
@@ -916,6 +958,82 @@ final class Client
             $query['limit'] = (int) $query['limit'];
         }
         return $this->get('/contacts', $query);
+    }
+
+    /**
+     * Exporta a base de contatos em CSV (mesmos filtros de {@see self::listContacts()}).
+     * GET /contacts/export
+     *
+     * Esta rota devolve **texto CSV**, não JSON: o retorno é o CSV cru (com o cabeçalho na
+     * primeira linha), pronto para `file_put_contents()` ou para um `str_getcsv()` linha a
+     * linha. A API manda `Content-Disposition: attachment` — o nome do arquivo é problema
+     * seu, a SDK não mexe no conteúdo (nem em BOM, nem em aspas).
+     *
+     * ```php
+     * $csv = $bz->exportContacts(['tags' => ['vip'], 'has_email' => true]);
+     * file_put_contents('contatos.csv', $csv);
+     * ```
+     *
+     * @param ExportContactsParams $params Sem `offset` (a exportação não pagina; use `limit`
+     *                        para limitar as linhas, teto de 100000).
+     * @param array{idempotency_key?: string, timeout?: int|float} $options
+     *                        Exportação grande costuma pedir `timeout` maior.
+     * @return string CSV cru (string vazia se a API não devolver corpo).
+     */
+    public function exportContacts(array $params = [], array $options = []): string
+    {
+        $query = self::pick($params, [
+            'search', 'tags', 'tags_match', 'groups', 'project_id', 'instance_id', 'status',
+            'city', 'state', 'country', 'zip', 'document', 'has_email',
+            'last_activity_after', 'last_activity_before', 'created_after', 'created_before',
+            'sort', 'limit',
+        ]);
+        if (isset($query['limit'])) {
+            $query['limit'] = (int) $query['limit'];
+        }
+
+        return $this->getText('/contacts/export', $query, $options);
+    }
+
+    /**
+     * Importa/atualiza contatos em lote (upsert por telefone, até 1000 linhas por chamada).
+     * POST /contacts/import
+     *
+     * Cada linha é casada pelo telefone: contato novo entra, contato existente é atualizado
+     * (campos ausentes não são apagados) e tags/grupos informados são aplicados. Linhas
+     * suprimidas/opt-out/duplicadas voltam em `skipped_rows`, linhas inválidas em `errors`
+     * — o lote NÃO falha por causa de uma linha.
+     *
+     * ```php
+     * $r = $bz->importContacts([
+     *     ['phone' => '+5511999990000', 'name' => 'Ana', 'tags' => ['vip']],
+     *     ['phone' => '+5511888880000', 'email' => 'bruno@example.com'],
+     * ], true); // dry_run: valida e relata sem gravar nada
+     * echo $r['created'], ' criados, ', $r['skipped'], ' pulados';
+     * ```
+     *
+     * @param list<ContactImportRow> $contacts Até 1000 linhas; `phone` obrigatório em cada uma
+     *                        (+DDIdígitos). `tags`/`groups` são chaves de tag/grupo de contato.
+     * @param bool|null $dryRun `true` valida e relata sem gravar. Omitido = o padrão da API (false).
+     * @param array{idempotency_key?: string, timeout?: int|float} $options
+     * @return array<string,mixed>|null { dry_run, total, created, updated, skipped, failed,
+     *                                   skipped_rows: [{index, phone, reason, detail?}], errors: [...] }.
+     *                                   `reason` em erros: phone_required, invalid_phone,
+     *                                   invalid_email, write_failed, taxonomy_failed; em pulos:
+     *                                   duplicate_phone, suppressed, opted_out, blocked,
+     *                                   unreachable, deleted.
+     *
+     * @throws BzapperException 400 invalid_body / contacts_required, 422 import_too_large
+     *                          (mais de 1000 linhas).
+     */
+    public function importContacts(array $contacts, ?bool $dryRun = null, array $options = []): ?array
+    {
+        $body = ['contacts' => array_values($contacts)];
+        if ($dryRun !== null) {
+            $body['dry_run'] = $dryRun;
+        }
+
+        return $this->call('POST', '/contacts/import', [], $body, $options);
     }
 
     // ---------------------------------------------------------------------

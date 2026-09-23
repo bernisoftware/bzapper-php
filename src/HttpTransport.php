@@ -116,6 +116,22 @@ trait HttpTransport
     }
 
     /**
+     * GET que devolve o corpo CRU, sem passar pelo JSON (rotas `text/csv` como
+     * `GET /contacts/export`). Mesmos cabeçalhos, mesmas novas tentativas e mesmos
+     * erros; só a decodificação muda — a regra "2xx não-JSON = INVALID_RESPONSE"
+     * não vale aqui. Corpo vazio → string vazia.
+     *
+     * @param array<string,mixed> $query
+     * @param array{idempotency_key?: string, timeout?: int|float} $options
+     */
+    private function getText(string $path, array $query = [], array $options = []): string
+    {
+        $raw = $this->call('GET', $path, $query, null, $options, null, true);
+
+        return is_string($raw) ? $raw : '';
+    }
+
+    /**
      * Codifica UM parâmetro de caminho (percent-encoding por segmento). Vazio, "." ou
      * ".." → InvalidArgumentException ANTES de qualquer requisição.
      */
@@ -140,12 +156,14 @@ trait HttpTransport
      * @param array<string,mixed>|null $body `null` = sem corpo.
      * @param array{idempotency_key?: string, timeout?: int|float} $options
      * @param array{fields: array<string,scalar>, file: array{name: string, filename: string, content: string, content_type: string}}|null $multipart
-     * @return array<mixed>|null
+     * @param bool $rawText `true` (só em rotas de texto, ex.: CSV): devolve o corpo cru
+     *                      em string, sem tentar JSON. Use pelo atalho {@see self::getText()}.
+     * @return array<mixed>|string|null
      *
      * @throws BzapperException Em qualquer resposta não-2xx ou falha de transporte.
      * @throws \InvalidArgumentException Opção/argumento inválido (antes de qualquer requisição).
      */
-    private function call(string $method, string $path, array $query = [], ?array $body = null, array $options = [], ?array $multipart = null): ?array
+    private function call(string $method, string $path, array $query = [], ?array $body = null, array $options = [], ?array $multipart = null, bool $rawText = false): array|string|null
     {
         self::checkOptions($options);
 
@@ -173,7 +191,9 @@ trait HttpTransport
         $requestId = bin2hex(random_bytes(16));
         $headers = [
             'Authorization: Bearer ' . $this->apiKey,
-            'Accept: application/json',
+            // Rota de texto (CSV): pedimos CSV e mantemos JSON como alternativa — o
+            // corpo de ERRO continua sendo JSON.
+            'Accept: ' . ($rawText ? 'text/csv, application/json;q=0.1' : 'application/json'),
             // Identifica SDK e versão para a API — é por ele que avisamos você
             // quando a versão que roda tem correção que exige atualizar o código.
             'X-Bzapper-Client: ' . Client::CLIENT_ID,
@@ -208,7 +228,7 @@ trait HttpTransport
             }
 
             if ($status >= 200 && $status < 300) {
-                return self::decodeSuccess($status, $responseHeaders, $raw, $requestId);
+                return $rawText ? $raw : self::decodeSuccess($status, $responseHeaders, $raw, $requestId);
             }
             if (in_array($status, [429, 502, 503, 504], true) && $attempt < $this->maxRetries) {
                 $retryAfter = BzapperException::parseRetryAfter($responseHeaders['retry-after'] ?? null);
