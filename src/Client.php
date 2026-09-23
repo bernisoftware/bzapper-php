@@ -88,7 +88,7 @@ final class Client
     use HttpTransport;
 
     /** Versão do SDK (usada no User-Agent). */
-    public const VERSION = '0.8.0';
+    public const VERSION = '0.8.1';
 
     /** Valor de `X-Bzapper-Client` / `User-Agent` enviado em toda requisição. */
     public const CLIENT_ID = 'bzapper-php/' . self::VERSION;
