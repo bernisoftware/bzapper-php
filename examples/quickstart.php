@@ -48,7 +48,7 @@ try {
     $bz->sendLocation($to, -23.5613, -46.6565, ['name' => 'Av. Paulista', 'address' => 'São Paulo, SP']);
 
     // 8) Contato (vCard)
-    $bz->sendContact($to, ['contact_name' => 'Suporte bZapper']);
+    $bz->sendContact($to, ['contact_name' => 'Suporte bZapper', 'contact_phone' => '+5511977776666']);
 
     // 9) Enquete
     $bz->sendPoll($to, 'Qual seu plano favorito?', ['Free', 'Pro', 'Enterprise'], 1);

@@ -88,7 +88,7 @@ final class Client
     use HttpTransport;
 
     /** Versão do SDK (usada no User-Agent). */
-    public const VERSION = '0.8.1';
+    public const VERSION = '0.8.2';
 
     /** Valor de `X-Bzapper-Client` / `User-Agent` enviado em toda requisição. */
     public const CLIENT_ID = 'bzapper-php/' . self::VERSION;
@@ -237,13 +237,16 @@ final class Client
     /**
      * Envia contato (vCard). POST /messages/contact
      *
-     * @param array{contact_name?: string, contact_vcard?: string} $opts Aceita também campos de SendBase.
+     * Manda `contact_vcard` pronto, ou `contact_name` + `contact_phone` (o telefone
+     * do contato COMPARTILHADO, em E.164 — nunca o destino).
+     *
+     * @param array{contact_name?: string, contact_phone?: string, contact_vcard?: string} $opts Aceita também campos de SendBase.
      * @return array<string,mixed>
      */
     public function sendContact(string $to, array $opts = []): array
     {
         $payload = $this->base($to, $opts);
-        foreach (['contact_name', 'contact_vcard'] as $k) {
+        foreach (['contact_name', 'contact_phone', 'contact_vcard'] as $k) {
             if (isset($opts[$k])) {
                 $payload[$k] = $opts[$k];
             }

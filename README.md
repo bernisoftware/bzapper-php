@@ -11,10 +11,10 @@ uma API HTTP REST.
 ## Instalação
 
 ```bash
-composer require bzapper/bzapper:0.8.1
+composer require bzapper/bzapper:0.8.2
 ```
 
-**Fixe a versão exata** (`"bzapper/bzapper": "0.8.1"` no `composer.json`, sem `^`): cada
+**Fixe a versão exata** (`"bzapper/bzapper": "0.8.2"` no `composer.json`, sem `^`): cada
 release declara na nota se muda a superfície pública (aditiva × quebra) — você atualiza
 quando decidir.
 
@@ -123,7 +123,7 @@ $bz->sendImage('+5511999999999', ['base64' => base64_encode(file_get_contents('f
 $bz->sendLocation('+5511999999999', -23.5613, -46.6565, ['name' => 'Av. Paulista', 'address' => 'São Paulo, SP']);
 
 // Contato (vCard)
-$bz->sendContact('+5511999999999', ['contact_name' => 'Suporte', 'contact_vcard' => "BEGIN:VCARD\n..."]);
+$bz->sendContact('+5511999999999', ['contact_name' => 'Suporte', 'contact_phone' => '+5511977776666']);
 
 // Enquete
 $bz->sendPoll('+5511999999999', 'Qual seu plano?', ['Free', 'Pro', 'Enterprise'], 1);
