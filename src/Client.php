@@ -95,7 +95,7 @@ final class Client
     use HttpTransport;
 
     /** Versão do SDK (usada no User-Agent). */
-    public const VERSION = '0.9.2';
+    public const VERSION = '0.9.3';
 
     /** Valor de `X-Bzapper-Client` / `User-Agent` enviado em toda requisição. */
     public const CLIENT_ID = 'bzapper-php/' . self::VERSION;
@@ -2488,6 +2488,33 @@ final class Client
     public function uploadTemplateMedia(string $content, string $filename, string $contentType = 'application/octet-stream', array $fields = [], array $options = []): ?array
     {
         return $this->upload('/templates/media', $content, $filename, $contentType, $fields, $options);
+    }
+
+    /**
+     * Template que leva o código de sendOtp fora da janela e a elegibilidade da conta
+     * para a categoria Autenticação (empresa verificada, limite de 2.000/dia).
+     * GET /templates/otp
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null `{template, eligibility}` — `template` null quando não escolhido.
+     */
+    public function getOTPTemplate(array $options = []): ?array
+    {
+        return $this->call('GET', '/templates/otp', [], null, $options);
+    }
+
+    /**
+     * Escolhe o template de Autenticação APROVADO que leva o código fora da janela
+     * (422 template_not_authentication em outra categoria). `template_id` vazio limpa.
+     * PUT /templates/otp
+     *
+     * @param array{template_id?: string} $body
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null null (204)
+     */
+    public function setOTPTemplate(array $body, array $options = []): ?array
+    {
+        return $this->call('PUT', '/templates/otp', [], $body, $options);
     }
 
     /**

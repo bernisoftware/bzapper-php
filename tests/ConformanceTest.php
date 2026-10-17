@@ -166,6 +166,8 @@ final class ConformanceTest extends TestCase
             'syncTemplates' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->syncTemplates($o),
             'uploadTemplateMedia' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->uploadTemplateMedia(...[...$file($b), $o]),
             'getFallbackTemplate' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->getFallbackTemplate($o),
+            'getOTPTemplate' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->getOTPTemplate($o),
+            'setOTPTemplate' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->setOTPTemplate($b, $o),
             'setFallbackTemplate' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->setFallbackTemplate($b, $o),
 
             // --- conversas e chats
@@ -320,7 +322,7 @@ final class ConformanceTest extends TestCase
         $table = self::operations();
         $missing = array_values(array_diff($data['ops'], array_keys($table)));
         $this->assertSame([], $missing, 'ops de cases.json sem método na SDK PHP: registre em ConformanceTest::operations()');
-        $this->assertCount(193, $data['ops']);
+        $this->assertCount(195, $data['ops']);
         $this->assertSame([], array_values(array_diff(self::LEGACY_ARRAY_OPS, array_keys($table))));
         // excluídas não podem ter método "por engano" na tabela
         $this->assertSame([], array_values(array_intersect($data['sdk_excluded_ops'], array_keys($table))));
