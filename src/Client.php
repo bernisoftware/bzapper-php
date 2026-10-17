@@ -95,7 +95,7 @@ final class Client
     use HttpTransport;
 
     /** Versão do SDK (usada no User-Agent). */
-    public const VERSION = '0.9.1';
+    public const VERSION = '0.9.2';
 
     /** Valor de `X-Bzapper-Client` / `User-Agent` enviado em toda requisição. */
     public const CLIENT_ID = 'bzapper-php/' . self::VERSION;
@@ -2588,6 +2588,22 @@ final class Client
     public function listOfficialNumbers(array $options = []): ?array
     {
         return $this->call('GET', '/official/numbers', [], null, $options);
+    }
+
+    /**
+     * Painel do oficial: custo estimado com a Meta (por categoria, projeção do mês,
+     * período anterior) e os KPIs do trilho. GET /official/insights
+     *
+     * @param array{days?:int,from?:string,to?:string} $period
+     * @return array<string,mixed>|null
+     */
+    public function getOfficialInsights(array $period = [], array $options = []): ?array
+    {
+        $query = array_filter(
+            ['days' => $period['days'] ?? null, 'from' => $period['from'] ?? null, 'to' => $period['to'] ?? null],
+            static fn ($v) => $v !== null
+        );
+        return $this->call('GET', '/official/insights', $query, null, $options);
     }
 
     /**

@@ -139,6 +139,7 @@ final class ConformanceTest extends TestCase
             'getOfficialStatus' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->getOfficialStatus($o),
             'getOfficialSignupConfig' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->getOfficialSignupConfig($o),
             'completeOfficialSignup' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->completeOfficialSignup($b, $o),
+            'getOfficialInsights' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->getOfficialInsights($q, $o),
             'uploadOfficialMedia' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->uploadOfficialMedia($file($b)[0], $file($b)[1], $file($b)[2], $q['instance_id'] ?? null, $o),
             'getOfficialMedia' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->getOfficialMedia($p['media_id'], $q['instance_id'] ?? null, $o),
             'deleteOfficialMedia' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->deleteOfficialMedia($p['media_id'], $q['instance_id'] ?? null, $o),
@@ -319,7 +320,7 @@ final class ConformanceTest extends TestCase
         $table = self::operations();
         $missing = array_values(array_diff($data['ops'], array_keys($table)));
         $this->assertSame([], $missing, 'ops de cases.json sem método na SDK PHP: registre em ConformanceTest::operations()');
-        $this->assertCount(192, $data['ops']);
+        $this->assertCount(193, $data['ops']);
         $this->assertSame([], array_values(array_diff(self::LEGACY_ARRAY_OPS, array_keys($table))));
         // excluídas não podem ter método "por engano" na tabela
         $this->assertSame([], array_values(array_intersect($data['sdk_excluded_ops'], array_keys($table))));
