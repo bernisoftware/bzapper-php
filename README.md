@@ -11,10 +11,10 @@ uma API HTTP REST.
 ## Instalação
 
 ```bash
-composer require bzapper/bzapper:0.8.2
+composer require bzapper/bzapper:0.9.0
 ```
 
-**Fixe a versão exata** (`"bzapper/bzapper": "0.8.2"` no `composer.json`, sem `^`): cada
+**Fixe a versão exata** (`"bzapper/bzapper": "0.9.0"` no `composer.json`, sem `^`): cada
 release declara na nota se muda a superfície pública (aditiva × quebra) — você atualiza
 quando decidir.
 
@@ -405,9 +405,48 @@ $bz->uncancelPlan();
 ## API oficial (WhatsApp Cloud API) e ciclo de vida do número
 
 ```php
+// Conexão: Embedded Signup (o caminho normal) ou credenciais manuais
+$cfg = $bz->getOfficialSignupConfig();            // app_id / config_id para o JS SDK da Meta
+$bz->completeOfficialSignup(['code' => $codeDoPopup, 'waba_id' => '...']); // o code expira em ~30 s
+$bz->connectOfficialAccount(['waba_id' => '...', 'access_token' => '...']); // phone_number_id é opcional
 $bz->getOfficialAccount();
-$bz->connectOfficialAccount(['waba_id' => '...', 'phone_number_id' => '...', 'access_token' => '...']);
-$bz->disconnectOfficialAccount();
+$bz->getOfficialStatus();                          // can_send, live, …
+$bz->disconnectOfficialAccount();                  // desconecta TODOS os números
+
+// Vários números na mesma WABA (o instance_id de cada um é o mesmo do envio)
+$bz->listOfficialNumbers();
+$bz->listAvailableOfficialNumbers();
+$bz->addOfficialNumber(['phone_number_id' => '...']);
+$bz->setDefaultOfficialNumber('id-do-numero');
+$bz->disconnectOfficialNumber('id-do-numero');     // o histórico fica
+
+// Perfil comercial (envie o perfil INTEIRO: campo vazio limpa na Meta)
+$perfil = $bz->getOfficialProfile();               // do número padrão
+$bz->updateOfficialProfile(['about' => 'Atendimento 9h–18h', 'websites' => ['https://exemplo.com']]);
+$bz->uploadOfficialProfilePhoto(file_get_contents('logo.png'), 'logo.png', 'image/png');
+$bz->reregisterOfficialProfile();                  // depois que a Meta aprova um novo nome
+// …ou de um número específico: getOfficialNumberProfile / updateOfficialNumberProfile /
+// uploadOfficialNumberProfilePhoto / reregisterOfficialNumberProfile ('id-do-numero', …)
+
+// Templates
+$media = $bz->uploadTemplateMedia(file_get_contents('cabecalho.png'), 'cabecalho.png', 'image/png');
+$r = $bz->createTemplate([
+    'name' => 'pedido_enviado', 'language' => 'pt_BR', 'category' => 'UTILITY',
+    'header' => ['type' => 'image', 'example' => $media['url']],
+    'body' => ['text' => 'Olá {{1}}, seu pedido {{2}} saiu para entrega.', 'example' => ['Maria', '#1234']],
+]);                                                // $r['advice'] = avisos que mudam o desfecho
+$bz->listTemplates();
+$bz->getTemplate($r['template']['id']);
+$bz->syncTemplates();                              // importa os criados no WhatsApp Manager
+$bz->setFallbackTemplate(['template_id' => $r['template']['id']]); // '' limpa
+$bz->getFallbackTemplate();
+$bz->deleteTemplate($r['template']['id']);
+
+// Envio de template aprovado (único jeito de abrir conversa fora da janela de 24h)
+$bz->sendTemplate('+5511999999999', 'pedido_enviado', ['language' => 'pt_BR', 'variables' => ['Maria', '#1234']]);
+
+// Com alternativa configurada, sendText fora da janela sai como o template e o
+// retorno conta o desvio: $msg['delivery'] = ['via' => 'template_fallback', 'template' => '…', 'note' => '…']
 
 $bz->setInstanceProxy('uuid', ['proxy_url' => 'http://user:pass@proxy:8080']);
 $bz->setInboundFilters('uuid', ['ignore_status' => true, 'ignore_groups' => false]);

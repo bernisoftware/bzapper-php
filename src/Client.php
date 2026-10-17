@@ -39,6 +39,13 @@ namespace Bzapper;
  * no corpo. Repetir o envio com a mesma chave em 24h devolve a MESMA resposta
  * sem reenviar (409 idempotency_in_progress / 422 idempotency_key_reused).
  *
+ * Resultado de envio: além de `message_id`/`status`, pode trazer `delivery`
+ * (`{via, template, note}`) — presente SÓ quando a plataforma tomou outro caminho.
+ * Hoje: no trilho oficial, com a janela de 24h fechada, o texto livre saiu como o
+ * template de alternativa do projeto (`via` = "template_fallback", `template` = nome
+ * enviado, `note` = frase que pode ser mostrada a uma pessoa). Sem alternativa
+ * configurada, o envio falha com 422 official_needs_template (ver setFallbackTemplate).
+ *
  * @phpstan-type RequestOptions array{idempotency_key?: string, timeout?: int|float}
  *
  * `RequestOptions` (último argumento dos métodos adicionados no padrão r2): `idempotency_key`
@@ -88,7 +95,7 @@ final class Client
     use HttpTransport;
 
     /** Versão do SDK (usada no User-Agent). */
-    public const VERSION = '0.8.2';
+    public const VERSION = '0.9.0';
 
     /** Valor de `X-Bzapper-Client` / `User-Agent` enviado em toda requisição. */
     public const CLIENT_ID = 'bzapper-php/' . self::VERSION;
@@ -128,6 +135,9 @@ final class Client
 
     /**
      * Envia mensagem de texto. POST /messages/text
+     *
+     * No trilho oficial, fora da janela de 24h, sai como o template de alternativa
+     * do projeto e o retorno traz `delivery` contando o desvio (ver o topo da classe).
      *
      * @param SendBase $opts
      * @return array<string,mixed>
@@ -325,6 +335,46 @@ final class Client
         return $this->send('/messages/list', $payload, $opts);
     }
 
+    /**
+     * Envia um template APROVADO pelo nome. POST /messages/template
+     *
+     * SÓ NO TRILHO OFICIAL: no não oficial não existe aprovação prévia, e a API
+     * responde 409 template_official_only. É o único jeito de iniciar conversa
+     * fora da janela de 24h. Você passa o NOME do template; o id da Meta nunca aparece.
+     *
+     * 'language' pode ser omitido quando o nome existe num só idioma; se existir em
+     * mais de um, a resposta é 409 template_ambiguous. A quantidade de 'variables'
+     * tem que bater exatamente com o template aprovado — divergência é a causa nº 1
+     * do erro 132000 da Meta, e a API confere antes de gastar a chamada (422).
+     *
+     * ```php
+     * $bz->sendTemplate('+5511999999999', 'pedido_enviado', [
+     *     'language' => 'pt_BR',
+     *     'variables' => ['Maria', '#1234'],
+     * ]);
+     * ```
+     *
+     * @param array{language?: string, variables?: list<string>, header_variables?: list<string>, button_variables?: list<string>, code?: string} $opts
+     *        Aceita também campos de SendBase (inclui 'idempotency_key'). 'code' só em
+     *        template de AUTHENTICATION (vai no corpo e no botão de copiar código).
+     * @return array<string,mixed>
+     */
+    public function sendTemplate(string $to, string $template, array $opts = []): array
+    {
+        $payload = $this->base($to, $opts) + ['template' => $template];
+        foreach (['language', 'code'] as $k) {
+            if (isset($opts[$k])) {
+                $payload[$k] = $opts[$k];
+            }
+        }
+        foreach (['variables', 'header_variables', 'button_variables'] as $k) {
+            if (isset($opts[$k]) && is_array($opts[$k])) {
+                $payload[$k] = array_values($opts[$k]);
+            }
+        }
+        return $this->send('/messages/template', $payload, $opts);
+    }
+
     // ---------------------------------------------------------------------
     // Envio agendado (scheduled_at em qualquer envio)
     // ---------------------------------------------------------------------
@@ -358,6 +408,12 @@ final class Client
      * Cria uma campanha com variações de template. POST /campaigns
      * Exige o plano Pro e o add-on de Campanhas. O corpo de cada variação aceita
      * {variaveis} e spintax {a|b|c}.
+     *
+     * No trilho OFICIAL cada variação é um template aprovado, no lugar do corpo —
+     * texto livre só alcança quem escreveu nas últimas 24h:
+     * ['body' => '', 'template' => ['name' => 'promo', 'language' => 'pt_BR',
+     *  'variables' => ['{nome}', 'OUTUBRO10']]]. O template precisa existir, estar
+     * aprovado e receber tantas variables quantas o corpo espera.
      *
      * @param array<int,array<string,mixed>> $variations
      * @param array<string,mixed> $opts  name, pool_id, pacing_profile, start_at
@@ -1307,6 +1363,18 @@ final class Client
         return $this->get('/webhooks/' . self::seg($id) . '/deliveries', $query);
     }
 
+    /**
+     * Reenvia uma entrega que FALHOU (mesmo corpo e event_id, assinada com o segredo
+     * atual). Só vale para falhas dos últimos 7 dias.
+     * POST /webhooks/{id}/deliveries/{delivery_id}/redeliver
+     *
+     * @return array<string,mixed>
+     */
+    public function redeliverWebhookDelivery(string $id, string $deliveryId): array
+    {
+        return $this->post('/webhooks/' . self::seg($id) . '/deliveries/' . self::seg($deliveryId) . '/redeliver');
+    }
+
     // ---------------------------------------------------------------------
     // Apps conectados (bZapper Connect — softwares parceiros usando esta conta)
     // ---------------------------------------------------------------------
@@ -1332,6 +1400,19 @@ final class Client
     public function revokeConnectedApp(string $id): array
     {
         return $this->delete('/me/connections/' . self::seg($id));
+    }
+
+    /**
+     * Converte uma conta criada por um parceiro em conta de uso geral (admin). A
+     * conexão CONTINUA: o parceiro segue funcionando e o desconto da parceria segue
+     * valendo — o que muda é que a conta passa a emitir chaves próprias. Sem volta.
+     * POST /me/connections/{id}/standalone
+     *
+     * @return array<string,mixed> A conexão, já marcada como autônoma.
+     */
+    public function convertConnectedAppToStandalone(string $id): array
+    {
+        return $this->post('/me/connections/' . self::seg($id) . '/standalone');
     }
 
     // =====================================================================
@@ -2139,7 +2220,13 @@ final class Client
      * Conecta uma conta WhatsApp Business ao projeto (credenciais manuais; o token é
      * guardado cifrado e nunca devolvido). POST /official/account
      *
-     * @param array{waba_id: string, phone_number_id: string, access_token: string, display_number?: string, verified_name?: string, status?: 'PENDENTE'|'AGUARDANDO_PAGAMENTO'|'ATIVA'} $body
+     * Caminho manual — o normal é o Embedded Signup (completeOfficialSignup).
+     * `phone_number_id` é opcional: sem ele, a API descobre o número pela WABA. Token
+     * copiado da tela "API Setup" da Meta expira em 24h; para conexão duradoura use um
+     * usuário de sistema com `whatsapp_business_messaging` + `whatsapp_business_management`.
+     * `status` vazio = PENDENTE.
+     *
+     * @param array{waba_id: string, access_token: string, phone_number_id?: string, display_number?: string, verified_name?: string, status?: 'PENDENTE'|'AGUARDANDO_PAGAMENTO'|'ATIVA'} $body
      * @param RequestOptions $options
      * @return array<string,mixed>|null
      */
@@ -2149,7 +2236,8 @@ final class Client
     }
 
     /**
-     * Desconecta a conta WhatsApp Business do projeto. DELETE /official/account
+     * Desconecta a conta WhatsApp Business do projeto — TODOS os números.
+     * DELETE /official/account (para um só, disconnectOfficialNumber).
      *
      * @param RequestOptions $options
      * @return array<string,mixed>|null
@@ -2203,7 +2291,7 @@ final class Client
     // ---------------------------------------------------------------------
 
     /**
-     * Elegibilidade de cada número para campanha (conexão + aquecimento).
+     * Elegibilidade de cada número para campanha (conexão e tempo de conexão).
      * GET /campaigns/eligibility?pool_id=
      *
      * @param array{pool_id?: string} $params
@@ -2292,6 +2380,440 @@ final class Client
     public function addPoolNumber(string $id, array $body, array $options = []): ?array
     {
         return $this->call('POST', '/pools/' . self::seg($id) . '/numbers', [], $body, $options);
+    }
+
+    // ---------------------------------------------------------------------
+    // Templates (trilho oficial — WhatsApp Cloud API)
+    // ---------------------------------------------------------------------
+
+    /**
+     * Lista os templates do projeto, mais novos primeiro. GET /templates
+     *
+     * Cada item traz 'status' e 'variables' — quantos valores o corpo espera, e
+     * portanto quantos você tem que enviar em sendTemplate.
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null `{templates: list<array>}`
+     */
+    public function listTemplates(array $options = []): ?array
+    {
+        return $this->call('GET', '/templates', [], null, $options);
+    }
+
+    /**
+     * Cria um template e o submete à análise da Meta. POST /templates
+     *
+     * Você descreve cabeçalho, corpo, rodapé e botões; a API monta o formato de
+     * componentes que a Meta espera. A validação acontece ANTES de submeter (422 com
+     * mensagem que diz o que corrigir): a Meta leva até 24h para responder, reprova
+     * com motivo lacônico e limita quantos templates se pode submeter.
+     *
+     * O retorno traz 'advice': avisos que não impediram a submissão mas mudam o
+     * desfecho — linguagem promocional numa categoria UTILITY, por exemplo, que a Meta
+     * reclassifica sozinha, e reclassificar muda o preço da conversa. A decisão chega
+     * depois pelos webhooks `template.approved` / `template.rejected`.
+     *
+     * Cabeçalho de mídia: envie a amostra com uploadTemplateMedia e passe a `url`
+     * devolvida em `header.example`.
+     *
+     * @param array{name: string, language: string, category: 'MARKETING'|'UTILITY'|'AUTHENTICATION', body: array{text: string, example?: list<string>}, header?: array{type: 'text'|'image'|'video'|'document', text?: string, example?: string, media_url?: string}, footer?: string, buttons?: list<array<string,mixed>>, code_expiry_minutes?: int} $body
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null `{template, advice}`
+     */
+    public function createTemplate(array $body, array $options = []): ?array
+    {
+        return $this->call('POST', '/templates', [], $body, $options);
+    }
+
+    /**
+     * Devolve um template. GET /templates/{id}
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function getTemplate(string $id, array $options = []): ?array
+    {
+        return $this->call('GET', '/templates/' . self::seg($id), [], null, $options);
+    }
+
+    /**
+     * Apaga o template aqui e na Meta. DELETE /templates/{id}
+     *
+     * A Meta apaga TODOS os idiomas de um nome de uma vez — então, se outro idioma do
+     * mesmo nome ainda está registrado aqui, a Meta não é tocada.
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null null (204)
+     */
+    public function deleteTemplate(string $id, array $options = []): ?array
+    {
+        return $this->call('DELETE', '/templates/' . self::seg($id), [], null, $options);
+    }
+
+    /**
+     * Importa os templates que existem na Meta e não aqui. POST /templates/sync
+     *
+     * Serve a quem já usava a Cloud API antes do bZapper e criou templates no
+     * WhatsApp Manager, e a reparar um webhook que não chegou.
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null `{imported: int}`
+     */
+    public function syncTemplates(array $options = []): ?array
+    {
+        return $this->call('POST', '/templates/sync', [], null, $options);
+    }
+
+    /**
+     * Envia a amostra do cabeçalho de um template (multipart, campo `file`; JPEG/PNG/
+     * MP4/PDF até 10 MB). POST /templates/media
+     *
+     * A Meta analisa cabeçalho de mídia a partir de um arquivo de amostra: passe a
+     * `url` devolvida como exemplo do cabeçalho em createTemplate — sem hospedar nada.
+     * É só a amostra da análise, não a mídia de cada envio.
+     *
+     * @param string $content     Bytes do arquivo (ex.: file_get_contents($caminho)).
+     * @param string $filename    Nome do arquivo (ex.: "cabecalho.png").
+     * @param string $contentType Tipo MIME (ex.: "image/png").
+     * @param array<string,scalar> $fields
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null `{url}`
+     */
+    public function uploadTemplateMedia(string $content, string $filename, string $contentType = 'application/octet-stream', array $fields = [], array $options = []): ?array
+    {
+        return $this->upload('/templates/media', $content, $filename, $contentType, $fields, $options);
+    }
+
+    /**
+     * Template de alternativa do projeto. GET /templates/fallback
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null `{template}` — `template` null quando não há alternativa.
+     */
+    public function getFallbackTemplate(array $options = []): ?array
+    {
+        return $this->call('GET', '/templates/fallback', [], null, $options);
+    }
+
+    /**
+     * Define o template enviado quando a janela de 24h está fechada.
+     * PUT /templates/fallback
+     *
+     * É o que faz o mesmo sendText funcionar dentro e fora da janela: com a janela
+     * fechada, a plataforma envia este template e conta o desvio no campo `delivery`
+     * do retorno. Sem alternativa, enviar para quem não escreve há mais de um dia falha
+     * com 422 official_needs_template. `template_id` vazio limpa; só template APROVADO
+     * é aceito (409 caso contrário).
+     *
+     * @param array{template_id?: string} $body
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null null (204)
+     */
+    public function setFallbackTemplate(array $body, array $options = []): ?array
+    {
+        return $this->call('PUT', '/templates/fallback', [], $body, $options);
+    }
+
+    // ---------------------------------------------------------------------
+    // Trilho oficial (WhatsApp Cloud API): conexão, números e perfil comercial
+    // ---------------------------------------------------------------------
+
+    /**
+     * O que já está pronto e o que falta, conferido ao vivo contra a Meta.
+     * GET /official/status
+     *
+     * 'can_send' é a pergunta que interessa. 'live' falso quer dizer que não deu para
+     * falar com a Meta e os valores são os últimos conhecidos.
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function getOfficialStatus(array $options = []): ?array
+    {
+        return $this->call('GET', '/official/status', [], null, $options);
+    }
+
+    /**
+     * O que o navegador precisa para abrir o Embedded Signup da Meta.
+     * GET /official/signup-config
+     *
+     * Devolve `app_id`, `config_id` e `graph_version` (públicos por natureza; o segredo
+     * do app nunca sai do servidor). `enabled` falso = esta instalação não tem Embedded
+     * Signup configurado — ofereça o caminho manual (connectOfficialAccount).
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function getOfficialSignupConfig(array $options = []): ?array
+    {
+        return $this->call('GET', '/official/signup-config', [], null, $options);
+    }
+
+    /**
+     * Conclui a conexão com o `code` devolvido pelo popup da Meta.
+     * POST /official/embedded-signup
+     *
+     * Troca o código de uso único por um token duradouro, assina os webhooks da WABA e
+     * registra o número na Cloud API — o cliente nunca vê nem digita credencial. O
+     * código expira ~30 s depois que o popup fecha: envie direto. Um passo não fatal
+     * que falhe volta em `warning` (`webhooks_not_subscribed` / `phone_not_registered`)
+     * em vez de perder a conexão.
+     *
+     * @param array{code: string, waba_id: string, phone_number_id?: string} $body
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null `{account, warning?}`
+     */
+    public function completeOfficialSignup(array $body, array $options = []): ?array
+    {
+        return $this->call('POST', '/official/embedded-signup', [], $body, $options);
+    }
+
+    /**
+     * Lista os números conectados ao projeto, o padrão primeiro. GET /official/numbers
+     *
+     * A Meta permite vários números na mesma conta comercial. Cada um tem um
+     * 'instance_id' — o mesmo valor que se informa no envio para escolher por qual
+     * número a mensagem sai, exatamente como no trilho não oficial. O marcado
+     * `is_default` envia quando o pedido não indica um.
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null `{numbers: list<array>}`
+     */
+    public function listOfficialNumbers(array $options = []): ?array
+    {
+        return $this->call('GET', '/official/numbers', [], null, $options);
+    }
+
+    /**
+     * Sobe um arquivo à Meta uma vez e devolve o `id` para reaproveitar como
+     * `media.id` em muitos envios (30 dias, do mesmo número). POST /official/media
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function uploadOfficialMedia(string $content, string $filename, string $contentType = 'application/octet-stream', ?string $instanceId = null, array $options = []): ?array
+    {
+        if ($filename === '') {
+            throw new \InvalidArgumentException('filename não pode ser vazio.');
+        }
+        $query = $instanceId !== null ? ['instance_id' => $instanceId] : [];
+        return $this->call('POST', '/official/media', $query, null, $options, [
+            'fields' => [],
+            'file' => ['name' => 'file', 'filename' => $filename, 'content' => $content, 'content_type' => $contentType],
+        ]);
+    }
+
+    /**
+     * Confere se um id de mídia ainda vale (404 media_not_found depois de 30 dias).
+     * GET /official/media/{media_id}
+     *
+     * @return array<string,mixed>|null
+     */
+    public function getOfficialMedia(string $mediaId, ?string $instanceId = null, array $options = []): ?array
+    {
+        $query = $instanceId !== null ? ['instance_id' => $instanceId] : [];
+        return $this->call('GET', '/official/media/' . self::seg($mediaId), $query, null, $options);
+    }
+
+    /**
+     * Apaga da Meta um arquivo guardado antes de vencer. DELETE /official/media/{media_id}
+     */
+    public function deleteOfficialMedia(string $mediaId, ?string $instanceId = null, array $options = []): void
+    {
+        $query = $instanceId !== null ? ['instance_id' => $instanceId] : [];
+        $this->call('DELETE', '/official/media/' . self::seg($mediaId), $query, null, $options);
+    }
+
+    /**
+     * Eventos crus que a Meta mandou para as contas do projeto, do mais novo ao mais
+     * antigo — o lado "Meta → bZapper" dos webhooks, com o estado do processamento.
+     * Passe o último `id` em $before para paginar. GET /official/webhook-events
+     *
+     * @return array<string,mixed> `{data: list<array>}`
+     */
+    public function listMetaWebhookEvents(?int $limit = null, ?int $before = null): array
+    {
+        $query = [];
+        if ($limit !== null) {
+            $query['limit'] = $limit;
+        }
+        if ($before !== null) {
+            $query['before'] = $before;
+        }
+        return $this->get('/official/webhook-events', $query);
+    }
+
+    /**
+     * Números da conta comercial na Meta que ainda não estão conectados ao projeto.
+     * GET /official/numbers/available
+     *
+     * É o que alimenta "adicionar número" sem abrir o painel da Meta.
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null `{numbers: list<array>}`
+     */
+    public function listAvailableOfficialNumbers(array $options = []): ?array
+    {
+        return $this->call('GET', '/official/numbers/available', [], null, $options);
+    }
+
+    /**
+     * Conecta mais um número da mesma conta comercial. POST /official/numbers
+     *
+     * Reaproveita a autorização já guardada (ela é da conta, não do número) — nada a
+     * autorizar de novo. Pegue o id em listAvailableOfficialNumbers; o número é
+     * conferido na Meta antes de salvar, então id errado falha aqui e não no 1º envio.
+     *
+     * @param array{phone_number_id: string} $body
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function addOfficialNumber(array $body, array $options = []): ?array
+    {
+        return $this->call('POST', '/official/numbers', [], $body, $options);
+    }
+
+    /**
+     * Escolhe o número que envia quando o pedido não indica um.
+     * PUT /official/numbers/{id}/default
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null null (204)
+     */
+    public function setDefaultOfficialNumber(string $id, array $options = []): ?array
+    {
+        return $this->call('PUT', '/official/numbers/' . self::seg($id) . '/default', [], null, $options);
+    }
+
+    /**
+     * Desconecta UM número; o histórico de conversas fica (a instância espelho é
+     * arquivada). Remover o padrão promove o mais antigo dos restantes.
+     * DELETE /official/numbers/{id}
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null null (204)
+     */
+    public function disconnectOfficialNumber(string $id, array $options = []): ?array
+    {
+        return $this->call('DELETE', '/official/numbers/' . self::seg($id), [], null, $options);
+    }
+
+    /**
+     * Perfil comercial do número padrão do projeto. GET /official/profile
+     *
+     * É o que o cliente final vê ao abrir a conversa: recado, descrição, endereço,
+     * e-mail, setor e até dois sites. Vive no NÚMERO, não na conta — com vários
+     * números, use getOfficialNumberProfile.
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function getOfficialProfile(array $options = []): ?array
+    {
+        return $this->call('GET', '/official/profile', [], null, $options);
+    }
+
+    /**
+     * Atualiza o perfil comercial do número padrão do projeto. PUT /official/profile
+     *
+     * Validado contra os limites da Meta ANTES de enviar (recado 139, descrição 512,
+     * endereço 256, até 2 sites, lista fechada de setores) — a recusa diz o campo e
+     * quanto passou. Envie o perfil INTEIRO: campo vazio não é "sem mudança", limpa o
+     * campo na Meta. Leia antes com getOfficialProfile e devolva com suas edições.
+     *
+     * @param array{about?: string, description?: string, address?: string, email?: string, vertical?: string, websites?: list<string>} $body
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function updateOfficialProfile(array $body, array $options = []): ?array
+    {
+        return $this->call('PUT', '/official/profile', [], $body, $options);
+    }
+
+    /**
+     * Troca a foto do perfil do número padrão (multipart, campo `file`; JPEG/PNG até
+     * 5 MB, a Meta recomenda 640x640). POST /official/profile/photo
+     *
+     * Envia à Meta e define como foto numa chamada só. Retorna o perfil relido (com o
+     * novo `profile_picture_url`) ou null (204) se não deu para reler na hora.
+     *
+     * @param array<string,scalar> $fields
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function uploadOfficialProfilePhoto(string $content, string $filename, string $contentType = 'application/octet-stream', array $fields = [], array $options = []): ?array
+    {
+        return $this->upload('/official/profile/photo', $content, $filename, $contentType, $fields, $options);
+    }
+
+    /**
+     * Registra de novo o número padrão na Cloud API. POST /official/profile/reregister
+     *
+     * O passo que se esquece depois que a Meta aprova um novo nome de exibição: até
+     * registrar de novo, o número segue mostrando o nome antigo. Já registrado conta
+     * como sucesso. Falha comum (502 reregister_failed): verificação em duas etapas
+     * com PIN escolhido pelo cliente.
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null null (204)
+     */
+    public function reregisterOfficialProfile(array $options = []): ?array
+    {
+        return $this->call('POST', '/official/profile/reregister', [], null, $options);
+    }
+
+    /**
+     * Perfil comercial do número informado. GET /official/numbers/{id}/profile
+     *
+     * @param string $id Id do número conectado (`id` de listOfficialNumbers).
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function getOfficialNumberProfile(string $id, array $options = []): ?array
+    {
+        return $this->call('GET', '/official/numbers/' . self::seg($id) . '/profile', [], null, $options);
+    }
+
+    /**
+     * Atualiza o perfil comercial do número informado. PUT /official/numbers/{id}/profile
+     *
+     * Mesmas regras de updateOfficialProfile: envie o perfil INTEIRO (campo vazio limpa).
+     *
+     * @param string $id Id do número conectado (`id` de listOfficialNumbers).
+     * @param array{about?: string, description?: string, address?: string, email?: string, vertical?: string, websites?: list<string>} $body
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null
+     */
+    public function updateOfficialNumberProfile(string $id, array $body, array $options = []): ?array
+    {
+        return $this->call('PUT', '/official/numbers/' . self::seg($id) . '/profile', [], $body, $options);
+    }
+
+    /**
+     * Troca a foto do perfil do número informado (multipart, campo `file`; JPEG/PNG até
+     * 5 MB). POST /official/numbers/{id}/profile/photo
+     *
+     * @param string $id Id do número conectado (`id` de listOfficialNumbers).
+     * @param array<string,scalar> $fields
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null perfil relido, ou null (204)
+     */
+    public function uploadOfficialNumberProfilePhoto(string $id, string $content, string $filename, string $contentType = 'application/octet-stream', array $fields = [], array $options = []): ?array
+    {
+        return $this->upload('/official/numbers/' . self::seg($id) . '/profile/photo', $content, $filename, $contentType, $fields, $options);
+    }
+
+    /**
+     * Registra de novo o número informado na Cloud API (após aprovação de novo nome).
+     * POST /official/numbers/{id}/profile/reregister
+     *
+     * @param string $id Id do número conectado (`id` de listOfficialNumbers).
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null null (204)
+     */
+    public function reregisterOfficialNumberProfile(string $id, array $options = []): ?array
+    {
+        return $this->call('POST', '/official/numbers/' . self::seg($id) . '/profile/reregister', [], null, $options);
     }
 
     // ---------------------------------------------------------------------

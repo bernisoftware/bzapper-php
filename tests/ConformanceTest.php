@@ -52,7 +52,8 @@ final class ConformanceTest extends TestCase
         'createProject', 'getBrand', 'setBrand', 'applyBrand', 'listUsers', 'inviteUser',
         'updateUserRole', 'removeUser', 'getAccountUsage', 'listAdvisories', 'markAdvisoryRead',
         'listWebhooks', 'createWebhook', 'updateWebhook', 'deleteWebhook', 'testWebhook',
-        'listWebhookDeliveries', 'listConnectedApps', 'revokeConnectedApp', 'getPartnerMe',
+        'listWebhookDeliveries', 'redeliverWebhookDelivery', 'listMetaWebhookEvents', 'listConnectedApps', 'revokeConnectedApp',
+        'convertConnectedAppToStandalone', 'getPartnerMe',
         'createConnectSession', 'exchangeConnectCode', 'listPartnerConnections', 'getPartnerConnection',
         'revokePartnerConnection', 'rotatePartnerConnectionKey',
     ];
@@ -98,6 +99,7 @@ final class ConformanceTest extends TestCase
             'revokeMessage' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->revokeMessage($p['id'], $q['for_everyone'] ?? null, $o),
             'forwardMessage' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->forwardMessage($b, $o),
             'markRead' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->markRead($p['id'], $b, $o),
+            'sendTemplate' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->sendTemplate($b['to'], $b['template'], $rest($b, 'to', 'template') + $o),
             'presenceChat' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b) => $c->presenceChat($b['instance_id'], $b['to'], $b['state']),
 
             // --- campanhas
@@ -134,6 +136,36 @@ final class ConformanceTest extends TestCase
             'getOfficialAccount' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->getOfficialAccount($o),
             'connectOfficialAccount' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->connectOfficialAccount($b, $o),
             'disconnectOfficialAccount' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->disconnectOfficialAccount($o),
+            'getOfficialStatus' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->getOfficialStatus($o),
+            'getOfficialSignupConfig' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->getOfficialSignupConfig($o),
+            'completeOfficialSignup' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->completeOfficialSignup($b, $o),
+            'uploadOfficialMedia' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->uploadOfficialMedia($file($b)[0], $file($b)[1], $file($b)[2], $q['instance_id'] ?? null, $o),
+            'getOfficialMedia' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->getOfficialMedia($p['media_id'], $q['instance_id'] ?? null, $o),
+            'deleteOfficialMedia' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->deleteOfficialMedia($p['media_id'], $q['instance_id'] ?? null, $o),
+            'listMetaWebhookEvents' => fn (Client $c, PartnerClient $pc, array $p, array $q) => $c->listMetaWebhookEvents($q['limit'] ?? null, $q['before'] ?? null),
+            'listOfficialNumbers' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->listOfficialNumbers($o),
+            'listAvailableOfficialNumbers' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->listAvailableOfficialNumbers($o),
+            'addOfficialNumber' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->addOfficialNumber($b, $o),
+            'setDefaultOfficialNumber' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->setDefaultOfficialNumber($p['id'], $o),
+            'disconnectOfficialNumber' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->disconnectOfficialNumber($p['id'], $o),
+            'getOfficialProfile' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->getOfficialProfile($o),
+            'updateOfficialProfile' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->updateOfficialProfile($b, $o),
+            'uploadOfficialProfilePhoto' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->uploadOfficialProfilePhoto(...[...$file($b), $o]),
+            'reregisterOfficialProfile' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->reregisterOfficialProfile($o),
+            'getOfficialNumberProfile' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->getOfficialNumberProfile($p['id'], $o),
+            'updateOfficialNumberProfile' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->updateOfficialNumberProfile($p['id'], $b, $o),
+            'uploadOfficialNumberProfilePhoto' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->uploadOfficialNumberProfilePhoto($p['id'], ...[...$file($b), $o]),
+            'reregisterOfficialNumberProfile' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->reregisterOfficialNumberProfile($p['id'], $o),
+
+            // --- templates (trilho oficial)
+            'listTemplates' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->listTemplates($o),
+            'createTemplate' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->createTemplate($b, $o),
+            'getTemplate' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->getTemplate($p['id'], $o),
+            'deleteTemplate' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->deleteTemplate($p['id'], $o),
+            'syncTemplates' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->syncTemplates($o),
+            'uploadTemplateMedia' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->uploadTemplateMedia(...[...$file($b), $o]),
+            'getFallbackTemplate' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->getFallbackTemplate($o),
+            'setFallbackTemplate' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->setFallbackTemplate($b, $o),
 
             // --- conversas e chats
             'listConversations' => fn (Client $c, PartnerClient $pc, array $p, array $q) => $c->listConversations($q['instance_id']),
@@ -203,6 +235,7 @@ final class ConformanceTest extends TestCase
             'deleteWebhook' => fn (Client $c, PartnerClient $pc, array $p) => $c->deleteWebhook($p['id']),
             'testWebhook' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b) => $c->testWebhook($p['id'], $b['event_type'] ?? null),
             'listWebhookDeliveries' => fn (Client $c, PartnerClient $pc, array $p, array $q) => $c->webhookDeliveries($p['id'], $q['limit'] ?? null),
+            'redeliverWebhookDelivery' => fn (Client $c, PartnerClient $pc, array $p, array $q) => $c->redeliverWebhookDelivery($p['id'], $p['delivery_id']),
             'triggerWebhookEvent' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->triggerWebhookEvent($b, $o),
             'listAdvisories' => fn (Client $c) => $c->listAdvisories(),
             'markAdvisoryRead' => fn (Client $c, PartnerClient $pc, array $p) => $c->markAdvisoryRead($p['id']),
@@ -253,6 +286,7 @@ final class ConformanceTest extends TestCase
             // --- apps conectados (lado da conta) e bZapper Connect (PartnerClient)
             'listConnectedApps' => fn (Client $c) => $c->listConnectedApps(),
             'revokeConnectedApp' => fn (Client $c, PartnerClient $pc, array $p) => $c->revokeConnectedApp($p['id']),
+            'convertConnectedAppToStandalone' => fn (Client $c, PartnerClient $pc, array $p) => $c->convertConnectedAppToStandalone($p['id']),
             'getPartnerMe' => fn (Client $c, PartnerClient $pc) => $pc->me(),
             'createConnectSession' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b) => $pc->createConnectSession($b['external_id'], $b['customer'], $b['locale'] ?? null),
             'exchangeConnectCode' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b) => $pc->exchangeCode($b['code']),
@@ -285,7 +319,7 @@ final class ConformanceTest extends TestCase
         $table = self::operations();
         $missing = array_values(array_diff($data['ops'], array_keys($table)));
         $this->assertSame([], $missing, 'ops de cases.json sem método na SDK PHP: registre em ConformanceTest::operations()');
-        $this->assertCount(161, $data['ops']);
+        $this->assertCount(192, $data['ops']);
         $this->assertSame([], array_values(array_diff(self::LEGACY_ARRAY_OPS, array_keys($table))));
         // excluídas não podem ter método "por engano" na tabela
         $this->assertSame([], array_values(array_intersect($data['sdk_excluded_ops'], array_keys($table))));
