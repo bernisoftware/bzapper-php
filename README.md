@@ -11,10 +11,10 @@ uma API HTTP REST.
 ## Instalação
 
 ```bash
-composer require bzapper/bzapper:0.9.3
+composer require bzapper/bzapper:0.9.4
 ```
 
-**Fixe a versão exata** (`"bzapper/bzapper": "0.9.3"` no `composer.json`, sem `^`): cada
+**Fixe a versão exata** (`"bzapper/bzapper": "0.9.4"` no `composer.json`, sem `^`): cada
 release declara na nota se muda a superfície pública (aditiva × quebra) — você atualiza
 quando decidir.
 

@@ -95,7 +95,7 @@ final class Client
     use HttpTransport;
 
     /** Versão do SDK (usada no User-Agent). */
-    public const VERSION = '0.9.3';
+    public const VERSION = '0.9.4';
 
     /** Valor de `X-Bzapper-Client` / `User-Agent` enviado em toda requisição. */
     public const CLIENT_ID = 'bzapper-php/' . self::VERSION;
@@ -2504,8 +2504,9 @@ final class Client
     }
 
     /**
-     * Escolhe o template de Autenticação APROVADO que leva o código fora da janela
-     * (422 template_not_authentication em outra categoria). `template_id` vazio limpa.
+     * Escolhe o template APROVADO que leva o código fora da janela: de Autenticação ou, até a
+     * Meta liberar, o provisório de Utilidade com botão de copiar código (senão 422
+     * template_not_otp_capable). `template_id` vazio limpa.
      * PUT /templates/otp
      *
      * @param array{template_id?: string} $body
