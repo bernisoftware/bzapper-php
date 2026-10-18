@@ -148,6 +148,7 @@ final class ConformanceTest extends TestCase
             'listOfficialNumbers' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->listOfficialNumbers($o),
             'listAvailableOfficialNumbers' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->listAvailableOfficialNumbers($o),
             'addOfficialNumber' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->addOfficialNumber($b, $o),
+            'getOfficialNumberHealth' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->getOfficialNumberHealth($p['id'], $o),
             'setDefaultOfficialNumber' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->setDefaultOfficialNumber($p['id'], $o),
             'disconnectOfficialNumber' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->disconnectOfficialNumber($p['id'], $o),
             'getOfficialProfile' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->getOfficialProfile($o),
@@ -327,7 +328,7 @@ final class ConformanceTest extends TestCase
         $table = self::operations();
         $missing = array_values(array_diff($data['ops'], array_keys($table)));
         $this->assertSame([], $missing, 'ops de cases.json sem método na SDK PHP: registre em ConformanceTest::operations()');
-        $this->assertCount(200, $data['ops']);
+        $this->assertCount(201, $data['ops']);
         $this->assertSame([], array_values(array_diff(self::LEGACY_ARRAY_OPS, array_keys($table))));
         // excluídas não podem ter método "por engano" na tabela
         $this->assertSame([], array_values(array_intersect($data['sdk_excluded_ops'], array_keys($table))));

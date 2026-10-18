@@ -95,7 +95,7 @@ final class Client
     use HttpTransport;
 
     /** Versão do SDK (usada no User-Agent). */
-    public const VERSION = '0.13.0';
+    public const VERSION = '0.14.0';
 
     /** Valor de `X-Bzapper-Client` / `User-Agent` enviado em toda requisição. */
     public const CLIENT_ID = 'bzapper-php/' . self::VERSION;
@@ -2800,6 +2800,18 @@ final class Client
     public function setDefaultOfficialNumber(string $id, array $options = []): ?array
     {
         return $this->call('PUT', '/official/numbers/' . self::seg($id) . '/default', [], null, $options);
+    }
+
+    /**
+     * Histórico de qualidade e limite de envio do número — cada mudança, da mais
+     * recente para a mais antiga. GET /official/numbers/{id}/health
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null `{quality_rating, messaging_limit, history}`
+     */
+    public function getOfficialNumberHealth(string $id, array $options = []): ?array
+    {
+        return $this->call('GET', '/official/numbers/' . self::seg($id) . '/health', [], null, $options);
     }
 
     /**
