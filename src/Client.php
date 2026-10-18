@@ -95,7 +95,7 @@ final class Client
     use HttpTransport;
 
     /** Versão do SDK (usada no User-Agent). */
-    public const VERSION = '0.9.4';
+    public const VERSION = '0.10.0';
 
     /** Valor de `X-Bzapper-Client` / `User-Agent` enviado em toda requisição. */
     public const CLIENT_ID = 'bzapper-php/' . self::VERSION;
@@ -2454,6 +2454,49 @@ final class Client
     public function deleteTemplate(string $id, array $options = []): ?array
     {
         return $this->call('DELETE', '/templates/' . self::seg($id), [], null, $options);
+    }
+
+    /**
+     * Edita o conteúdo de um template que já existe na Meta. PUT /templates/{id}
+     *
+     * Mesmo corpo da criação; nome e idioma não mudam. A Meta permite editar o
+     * APROVADO 1x a cada 24 horas e 10x em 30 dias, manda de volta para análise (volta
+     * a PENDING e não envia até a decisão) e não deixa o aprovado mudar de categoria.
+     *
+     * @param array{name: string, language: string, category: 'MARKETING'|'UTILITY'|'AUTHENTICATION', body: array{text: string, example?: list<string>}, header?: array<string,mixed>, footer?: string, buttons?: list<array<string,mixed>>, code_expiry_minutes?: int} $body
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null `{template, advice}`
+     */
+    public function editTemplate(string $id, array $body, array $options = []): ?array
+    {
+        return $this->call('PUT', '/templates/' . self::seg($id), [], $body, $options);
+    }
+
+    /**
+     * Consulta a Template Library da Meta: textos de utilidade e autenticação já
+     * aprovados. Criado sem mudar o texto, o template nasce aprovado.
+     * GET /templates/library
+     *
+     * @param array{search?: string, topic?: string, usecase?: string, industry?: string, language?: string} $query
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null `{templates: list}`
+     */
+    public function listLibraryTemplates(array $query = [], array $options = []): ?array
+    {
+        return $this->call('GET', '/templates/library', $query, null, $options);
+    }
+
+    /**
+     * Cria um template a partir de um modelo da biblioteca — o texto é o da Meta, por
+     * isso nasce aprovado; informe só o que os botões pedem. POST /templates/library
+     *
+     * @param array{library_template_name: string, language: string, name?: string, button_inputs?: list<array{type: 'url'|'phone_number', url?: string, url_suffix_example?: string, phone?: string}>, code_expiry_minutes?: int} $body
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null `{template}`
+     */
+    public function createTemplateFromLibrary(array $body, array $options = []): ?array
+    {
+        return $this->call('POST', '/templates/library', [], $body, $options);
     }
 
     /**
