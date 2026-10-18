@@ -95,7 +95,7 @@ final class Client
     use HttpTransport;
 
     /** Versão do SDK (usada no User-Agent). */
-    public const VERSION = '0.10.0';
+    public const VERSION = '0.11.0';
 
     /** Valor de `X-Bzapper-Client` / `User-Agent` enviado em toda requisição. */
     public const CLIENT_ID = 'bzapper-php/' . self::VERSION;
@@ -2470,6 +2470,19 @@ final class Client
     public function editTemplate(string $id, array $body, array $options = []): ?array
     {
         return $this->call('PUT', '/templates/' . self::seg($id), [], $body, $options);
+    }
+
+    /**
+     * Desempenho de cada template (enviados, entregues, lidos, falhas) nos últimos
+     * `days` dias (1–90, padrão 30). GET /templates/analytics
+     *
+     * @param array{days?: int} $query
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null `{days, templates}`
+     */
+    public function getTemplateAnalytics(array $query = [], array $options = []): ?array
+    {
+        return $this->call('GET', '/templates/analytics', $query, null, $options);
     }
 
     /**

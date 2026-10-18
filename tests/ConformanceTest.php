@@ -163,6 +163,7 @@ final class ConformanceTest extends TestCase
             'createTemplate' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->createTemplate($b, $o),
             'getTemplate' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->getTemplate($p['id'], $o),
             'deleteTemplate' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->deleteTemplate($p['id'], $o),
+            'getTemplateAnalytics' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->getTemplateAnalytics($q, $o),
             'editTemplate' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->editTemplate($p['id'], $b, $o),
             'listLibraryTemplates' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->listLibraryTemplates($q, $o),
             'createTemplateFromLibrary' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->createTemplateFromLibrary($b, $o),
@@ -325,7 +326,7 @@ final class ConformanceTest extends TestCase
         $table = self::operations();
         $missing = array_values(array_diff($data['ops'], array_keys($table)));
         $this->assertSame([], $missing, 'ops de cases.json sem método na SDK PHP: registre em ConformanceTest::operations()');
-        $this->assertCount(198, $data['ops']);
+        $this->assertCount(199, $data['ops']);
         $this->assertSame([], array_values(array_diff(self::LEGACY_ARRAY_OPS, array_keys($table))));
         // excluídas não podem ter método "por engano" na tabela
         $this->assertSame([], array_values(array_intersect($data['sdk_excluded_ops'], array_keys($table))));
