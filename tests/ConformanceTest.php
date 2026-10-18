@@ -107,6 +107,7 @@ final class ConformanceTest extends TestCase
             'listCampaigns' => fn (Client $c, PartnerClient $pc, array $p, array $q) => $c->listCampaigns($q),
             'getCampaign' => fn (Client $c, PartnerClient $pc, array $p) => $c->getCampaign($p['id']),
             'updateCampaign' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b) => $c->updateCampaign($p['id'], $b),
+            'estimateCampaignMetaCost' => fn (Client $c, PartnerClient $pc, array $p, array $q) => $c->estimateCampaignMetaCost((int) $q['recipients'], $q['template'], $q['language'] ?? null),
             'estimateCampaign' => fn (Client $c, PartnerClient $pc, array $p, array $q) => $c->estimateCampaign($q['recipients'] ?? null, $q['pacing'] ?? null, $q['pool_id'] ?? null),
             'getCampaignEligibility' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->getCampaignEligibility($q, $o),
             'uploadCampaignMedia' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->uploadCampaignMedia(...[...$file($b), $o]),
@@ -326,7 +327,7 @@ final class ConformanceTest extends TestCase
         $table = self::operations();
         $missing = array_values(array_diff($data['ops'], array_keys($table)));
         $this->assertSame([], $missing, 'ops de cases.json sem método na SDK PHP: registre em ConformanceTest::operations()');
-        $this->assertCount(199, $data['ops']);
+        $this->assertCount(200, $data['ops']);
         $this->assertSame([], array_values(array_diff(self::LEGACY_ARRAY_OPS, array_keys($table))));
         // excluídas não podem ter método "por engano" na tabela
         $this->assertSame([], array_values(array_intersect($data['sdk_excluded_ops'], array_keys($table))));

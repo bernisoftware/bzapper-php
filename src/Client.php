@@ -95,7 +95,7 @@ final class Client
     use HttpTransport;
 
     /** Versão do SDK (usada no User-Agent). */
-    public const VERSION = '0.12.0';
+    public const VERSION = '0.13.0';
 
     /** Valor de `X-Bzapper-Client` / `User-Agent` enviado em toda requisição. */
     public const CLIENT_ID = 'bzapper-php/' . self::VERSION;
@@ -491,6 +491,15 @@ final class Client
      * @param string|null $poolId     Restringe a estimativa a um pool.
      * @return array<string,mixed> { recipients, numbers_available, estimated_seconds, estimated_human }
      */
+    public function estimateCampaignMetaCost(int $recipients, string $template, ?string $language = null): array
+    {
+        $query = ['recipients' => $recipients, 'template' => $template];
+        if ($language !== null) {
+            $query['language'] = $language;
+        }
+        return $this->call('GET', '/campaigns/meta-cost', $query, null, []) ?? [];
+    }
+
     public function estimateCampaign(?int $recipients = null, ?string $pacing = null, ?string $poolId = null): array
     {
         $query = [];
