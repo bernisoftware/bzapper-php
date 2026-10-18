@@ -95,7 +95,7 @@ final class Client
     use HttpTransport;
 
     /** Versão do SDK (usada no User-Agent). */
-    public const VERSION = '0.14.1';
+    public const VERSION = '0.15.0';
 
     /** Valor de `X-Bzapper-Client` / `User-Agent` enviado em toda requisição. */
     public const CLIENT_ID = 'bzapper-php/' . self::VERSION;
@@ -2484,6 +2484,20 @@ final class Client
     }
 
     /**
+     * Confere o template com as regras da Meta SEM submeter (não chama a Meta nem gasta
+     * submissão). 'id' em $query confere uma edição. POST /templates/validate
+     *
+     * @param array<string,mixed> $body o mesmo corpo de createTemplate
+     * @param array{id?: string} $query
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null `{valid, problem?, advice?}`
+     */
+    public function validateTemplate(array $body, array $query = [], array $options = []): ?array
+    {
+        return $this->call('POST', '/templates/validate', $query, $body, $options);
+    }
+
+    /**
      * Desempenho de cada template (enviados, entregues, lidos, falhas) nos últimos
      * `days` dias (1–90, padrão 30). GET /templates/analytics
      *
@@ -2572,7 +2586,8 @@ final class Client
 
     /**
      * Escolhe o template APROVADO que leva o código fora da janela: de Autenticação ou, até a
-     * Meta liberar, o provisório de Utilidade com uma variável para o código (senão 422
+     * Meta liberar, o provisório (Marketing com botão de copiar código, ou Utilidade com uma
+     * variável para o código) (senão 422
      * template_not_otp_capable). `template_id` vazio limpa.
      * PUT /templates/otp
      *
