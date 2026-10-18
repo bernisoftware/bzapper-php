@@ -95,7 +95,7 @@ final class Client
     use HttpTransport;
 
     /** Versão do SDK (usada no User-Agent). */
-    public const VERSION = '0.11.0';
+    public const VERSION = '0.12.0';
 
     /** Valor de `X-Bzapper-Client` / `User-Agent` enviado em toda requisição. */
     public const CLIENT_ID = 'bzapper-php/' . self::VERSION;
@@ -360,20 +360,22 @@ final class Client
      * ]);
      * ```
      *
-     * @param array{language?: string, variables?: list<string>, header_variables?: list<string>, button_variables?: list<string>, code?: string} $opts
+     * @param array{language?: string, variables?: list<string>, header_variables?: list<string>, button_variables?: list<string>, code?: string, offer_expires_at?: string, cards?: list<array{header_url?: string, variables?: list<string>, button_variables?: list<string>}>} $opts
      *        Aceita também campos de SendBase (inclui 'idempotency_key'). 'code' só em
      *        template de AUTHENTICATION (vai no corpo e no botão de copiar código).
+     *        'offer_expires_at' (RFC 3339) é o prazo da oferta por tempo limitado; 'cards'
+     *        traz os valores de cada cartão do carrossel, na ordem.
      * @return array<string,mixed>
      */
     public function sendTemplate(string $to, string $template, array $opts = []): array
     {
         $payload = $this->base($to, $opts) + ['template' => $template];
-        foreach (['language', 'code'] as $k) {
+        foreach (['language', 'code', 'offer_expires_at'] as $k) {
             if (isset($opts[$k])) {
                 $payload[$k] = $opts[$k];
             }
         }
-        foreach (['variables', 'header_variables', 'button_variables'] as $k) {
+        foreach (['variables', 'header_variables', 'button_variables', 'cards'] as $k) {
             if (isset($opts[$k]) && is_array($opts[$k])) {
                 $payload[$k] = array_values($opts[$k]);
             }
@@ -2422,7 +2424,7 @@ final class Client
      * Cabeçalho de mídia: envie a amostra com uploadTemplateMedia e passe a `url`
      * devolvida em `header.example`.
      *
-     * @param array{name: string, language: string, category: 'MARKETING'|'UTILITY'|'AUTHENTICATION', body: array{text: string, example?: list<string>}, header?: array{type: 'text'|'image'|'video'|'document', text?: string, example?: string, media_url?: string}, footer?: string, buttons?: list<array<string,mixed>>, code_expiry_minutes?: int} $body
+     * @param array{name: string, language: string, category: 'MARKETING'|'UTILITY'|'AUTHENTICATION', body: array{text: string, example?: list<string>}, header?: array{type: 'text'|'image'|'video'|'document'|'location', text?: string, example?: string, media_url?: string}, footer?: string, buttons?: list<array<string,mixed>>, code_expiry_minutes?: int, limited_time_offer?: array{text: string, has_expiration?: bool}, cards?: list<array<string,mixed>>} $body
      * @param RequestOptions $options
      * @return array<string,mixed>|null `{template, advice}`
      */
