@@ -210,7 +210,7 @@ final class ConformanceTest extends TestCase
             // --- contatos (CRM)
             'contactsCheck' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b) => $c->contactsCheck($b['instance_id'], $b['phones']),
             'listContacts' => fn (Client $c, PartnerClient $pc, array $p, array $q) => $c->listContacts($q),
-            'importContacts' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->importContacts($b['contacts'], $b['dry_run'] ?? null, $o),
+            'importContacts' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->importContacts($b['contacts'], $b['dry_run'] ?? null, $o, $b['tags'] ?? null, $b['groups'] ?? null),
             'createContact' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->createContact($b, $o),
             'getContact' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->getContact($p['id'], $o),
             'updateContact' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->updateContact($p['id'], $b, $o),

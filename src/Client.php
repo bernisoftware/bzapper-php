@@ -95,7 +95,7 @@ final class Client
     use HttpTransport;
 
     /** Versão do SDK (usada no User-Agent). */
-    public const VERSION = '0.15.0';
+    public const VERSION = '0.15.1';
 
     /** Valor de `X-Bzapper-Client` / `User-Agent` enviado em toda requisição. */
     public const CLIENT_ID = 'bzapper-php/' . self::VERSION;
@@ -1089,7 +1089,8 @@ final class Client
      * ```
      *
      * @param list<ContactImportRow> $contacts Até 1000 linhas; `phone` obrigatório em cada uma
-     *                        (+DDIdígitos). `tags`/`groups` são chaves de tag/grupo de contato.
+     *                        (+DDIdígitos ou o LID do WhatsApp, `<dígitos>@lid`; também `lid`).
+     *                        `tags`/`groups` são chaves de tag/grupo de contato.
      * @param bool|null $dryRun `true` valida e relata sem gravar. Omitido = o padrão da API (false).
      * @param array{idempotency_key?: string, timeout?: int|float} $options
      * @return array<string,mixed>|null { dry_run, total, created, updated, skipped, failed,
@@ -1099,14 +1100,22 @@ final class Client
      *                                   duplicate_phone, suppressed, opted_out, blocked,
      *                                   unreachable, deleted.
      *
+     * @param list<string>|null $tags   Tags para TODAS as linhas (somam às de cada linha).
+     * @param list<string>|null $groups Grupos para TODAS as linhas.
      * @throws BzapperException 400 invalid_body / contacts_required, 422 import_too_large
      *                          (mais de 1000 linhas).
      */
-    public function importContacts(array $contacts, ?bool $dryRun = null, array $options = []): ?array
+    public function importContacts(array $contacts, ?bool $dryRun = null, array $options = [], ?array $tags = null, ?array $groups = null): ?array
     {
         $body = ['contacts' => array_values($contacts)];
         if ($dryRun !== null) {
             $body['dry_run'] = $dryRun;
+        }
+        if ($tags !== null) {
+            $body['tags'] = array_values($tags);
+        }
+        if ($groups !== null) {
+            $body['groups'] = array_values($groups);
         }
 
         return $this->call('POST', '/contacts/import', [], $body, $options);
