@@ -11,10 +11,10 @@ uma API HTTP REST.
 ## Instalação
 
 ```bash
-composer require bzapper/bzapper:0.15.2
+composer require bzapper/bzapper:0.16.0
 ```
 
-**Fixe a versão exata** (`"bzapper/bzapper": "0.15.2"` no `composer.json`, sem `^`): cada
+**Fixe a versão exata** (`"bzapper/bzapper": "0.16.0"` no `composer.json`, sem `^`): cada
 release declara na nota se muda a superfície pública (aditiva × quebra) — você atualiza
 quando decidir.
 
@@ -156,6 +156,7 @@ $bz->sendList('+5511999999999', 'Cardápio:', [
 $bz->listInstances();
 $bz->createInstance('+5511999999999', ['nickname' => 'Atendimento', 'proxy_url' => 'http://user:pass@proxy:8080']);
 $bz->getInstance('uuid');
+$bz->getInstanceUptime('uuid'); // windows['24h'|'7d'|'30d'] (null = sem histórico ainda) + events
 
 // Conectar: method = 'qr' (padrão) ou 'code'
 $res = $bz->connectInstance('uuid', 'qr');
@@ -614,6 +615,15 @@ Do lado do **cliente** (conta bZapper), os apps conectados aparecem via
 `Client`: `$bz->listConnectedApps()` (`{ data: [...] }`, com `partner_name` e
 `partner_logo_url`) e `$bz->revokeConnectedApp('uuid')` (admin; a key do parceiro
 para de funcionar na hora).
+
+### Conector de IA (MCP)
+
+Apps de IA (ex.: Claude) que uma pessoa autorizou a operar a conta pelo conector MCP:
+
+```php
+$conns = $bz->listAIConnections();            // { data: [...] } com client_name, user_email, user_role, scopes, last_used_at
+$bz->revokeAIConnection($conns['data'][0]['id']); // os tokens dele param na próxima chamada
+```
 
 ### Exemplo completo de backend (PHP puro)
 

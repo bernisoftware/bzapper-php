@@ -95,7 +95,7 @@ final class Client
     use HttpTransport;
 
     /** Versão do SDK (usada no User-Agent). */
-    public const VERSION = '0.15.2';
+    public const VERSION = '0.16.0';
 
     /** Valor de `X-Bzapper-Client` / `User-Agent` enviado em toda requisição. */
     public const CLIENT_ID = 'bzapper-php/' . self::VERSION;
@@ -645,6 +645,21 @@ final class Client
     public function getInstance(string $id): array
     {
         return $this->get('/instances/' . self::seg($id));
+    }
+
+    /**
+     * Disponibilidade do número: % do tempo conectado em 24h, 7d e 30d (aquecimento
+     * conta como conectado), desde quando está no status atual e as 20 últimas trocas
+     * de status. GET /instances/{id}/uptime
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null `{instance_id, status, since, tracked_since,
+     *                                  windows: {24h, 7d, 30d}, events: list<array>}` — cada
+     *                                  janela é `null` enquanto o histórico não a cobre.
+     */
+    public function getInstanceUptime(string $id, array $options = []): ?array
+    {
+        return $this->call('GET', '/instances/' . self::seg($id) . '/uptime', [], null, $options);
     }
 
     /**
@@ -2967,6 +2982,37 @@ final class Client
     public function reregisterOfficialNumberProfile(string $id, array $options = []): ?array
     {
         return $this->call('POST', '/official/numbers/' . self::seg($id) . '/profile/reregister', [], null, $options);
+    }
+
+    // ---------------------------------------------------------------------
+    // Conector de IA (MCP)
+    // ---------------------------------------------------------------------
+
+    /**
+     * Apps de IA conectados a esta conta pelo conector MCP, do mais novo ao mais
+     * antigo. Admin vê todas as conexões da conta; agente, só as dele; uma API key
+     * sem pessoa por trás só vê se for key de admin. GET /ai-connections
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null `{data: list<array>}` — cada item com id, client_name,
+     *                                  user_id, user_name, user_email, user_role, project_ids,
+     *                                  scopes, created_at e last_used_at (ausente até o 1º uso).
+     */
+    public function listAIConnections(array $options = []): ?array
+    {
+        return $this->call('GET', '/ai-connections', [], null, $options);
+    }
+
+    /**
+     * Revoga o acesso de um app de IA: os tokens dele param na próxima chamada. Admin
+     * revoga qualquer conexão da conta; agente, só as dele. DELETE /ai-connections/{id}
+     *
+     * @param RequestOptions $options
+     * @return array<string,mixed>|null null (204)
+     */
+    public function revokeAIConnection(string $id, array $options = []): ?array
+    {
+        return $this->call('DELETE', '/ai-connections/' . self::seg($id), [], null, $options);
     }
 
     // ---------------------------------------------------------------------

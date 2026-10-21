@@ -123,6 +123,7 @@ final class ConformanceTest extends TestCase
             'listInstances' => fn (Client $c, PartnerClient $pc, array $p, array $q) => $c->listInstances($q),
             'createInstance' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b) => $c->createInstance($b['phone'], $rest($b, 'phone')),
             'getInstance' => fn (Client $c, PartnerClient $pc, array $p) => $c->getInstance($p['id']),
+            'getInstanceUptime' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->getInstanceUptime($p['id'], $o),
             'deleteInstance' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->deleteInstance($p['id'], $o),
             'connectInstance' => fn (Client $c, PartnerClient $pc, array $p, array $q) => $c->connectInstance($p['id'], $q['method'] ?? 'qr'),
             'disconnectInstance' => fn (Client $c, PartnerClient $pc, array $p) => $c->disconnectInstance($p['id']),
@@ -294,6 +295,8 @@ final class ConformanceTest extends TestCase
             'getPricing' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->getPricing($o),
 
             // --- apps conectados (lado da conta) e bZapper Connect (PartnerClient)
+            'listAIConnections' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->listAIConnections($o),
+            'revokeAIConnection' => fn (Client $c, PartnerClient $pc, array $p, array $q, array $b, array $o) => $c->revokeAIConnection($p['id'], $o),
             'listConnectedApps' => fn (Client $c) => $c->listConnectedApps(),
             'revokeConnectedApp' => fn (Client $c, PartnerClient $pc, array $p) => $c->revokeConnectedApp($p['id']),
             'convertConnectedAppToStandalone' => fn (Client $c, PartnerClient $pc, array $p) => $c->convertConnectedAppToStandalone($p['id']),
@@ -329,7 +332,7 @@ final class ConformanceTest extends TestCase
         $table = self::operations();
         $missing = array_values(array_diff($data['ops'], array_keys($table)));
         $this->assertSame([], $missing, 'ops de cases.json sem método na SDK PHP: registre em ConformanceTest::operations()');
-        $this->assertCount(202, $data['ops']);
+        $this->assertCount(205, $data['ops']);
         $this->assertSame([], array_values(array_diff(self::LEGACY_ARRAY_OPS, array_keys($table))));
         // excluídas não podem ter método "por engano" na tabela
         $this->assertSame([], array_values(array_intersect($data['sdk_excluded_ops'], array_keys($table))));
